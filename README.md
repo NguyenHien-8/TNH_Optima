@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-VCA Optima là ứng dụng desktop cho phép thu nhận ảnh/video từ camera monochrome, điều khiển cơ cấu chấp hành qua cổng serial, quản lý project theo Project/Item và đo góc tiếp xúc của giọt chất lỏng. Bản 1.1.0 tổ chức theo hướng MVVM: `Presentation` điều phối giao diện, `Models` chứa nghiệp vụ/thuật toán, `Infrastructure` cung cấp lưu trữ và tra cứu tài nguyên, còn `ReSource` chứa QSS và icon.
+VCA Optima is a desktop application that allows image/video acquisition from monochrome cameras, actuator control via serial port, project management by Project/Item, and measurement of liquid droplet contact angles. Version 1.1.0 is organized according to the MVVM approach: `Presentation` coordinates the interface, `Models` contains business logic/algorithms, `Infrastructure` provides resource storage and retrieval, and `Resource` contains QSS and icons.
 
 
 
