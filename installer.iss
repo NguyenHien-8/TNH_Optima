@@ -1,3 +1,8 @@
+; Manual installer build:
+; 1. Run: python -m PyInstaller --clean --noconfirm .\TNH_Optima.spec
+; 2. Open this file in Inno Setup Compiler.
+; 3. Select Build > Compile to create the setup executable.
+
 #define MyAppName "TNH Optima"
 #define MyAppVersion "1.1.0"
 #define MyAppPublisher "TNH"

@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-from build_installer import compile_installer
-
 block_cipher = None
 project_dir = Path(SPECPATH).resolve()
 
@@ -70,7 +68,3 @@ coll = COLLECT(
     upx_exclude=[],
     name='TNH Optima',
 )
-
-# PyInstaller only creates the runnable application under dist/. Compile the
-# actual Windows setup program after COLLECT has completed successfully.
-compile_installer(project_dir)
