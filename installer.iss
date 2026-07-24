@@ -1,7 +1,7 @@
 #define MyAppName "TNH Optima"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "0.1.0"
 #define MyAppPublisher "TNH"
-#define MyAppURL "https://github.com/NguyenHien-8/VCA_Optima/tree/Ver1.1"
+#define MyAppURL "https://github.com/NguyenHien-8/VCA_Optima"
 #define MyAppExeName "TNH Optima.exe"
 
 [Setup]
