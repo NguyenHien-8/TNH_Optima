@@ -16,6 +16,7 @@ class ImageEditorViewModel(QObject):
         super().__init__()
         self.project_name = project_name
         self.item_name = item_name
+        self.current_image_path = None
         self.current_pixmap = None
         self._workers = set()
 
@@ -32,6 +33,7 @@ class ImageEditorViewModel(QObject):
         if image.isNull():
             self.error_occurred.emit(f"Cannot load image: {file_path}")
             return
+        self.current_image_path = file_path
         self.current_pixmap = QPixmap.fromImage(image)
         self.image_loaded.emit(self.current_pixmap)
 

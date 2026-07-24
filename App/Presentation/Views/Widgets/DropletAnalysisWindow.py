@@ -6,6 +6,7 @@
 import os
 import numpy as np
 from datetime import datetime
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -65,7 +66,16 @@ class DropletAnalysisWindow(QMainWindow):
     MEASURE_THRESHOLD = 0.02
     SELECTION_DRAG_THRESHOLD_PX = 5
 
-    def __init__(self, view_model, pixmap, parent=None, source_image_path=None, item_path=None):
+    def __init__(
+        self,
+        view_model,
+        pixmap,
+        parent=None,
+        source_image_path=None,
+        item_path=None,
+        project_name=None,
+        item_name=None,
+    ):
         # Keep a logical MainView owner without creating a native transient
         # relationship, so restoring MainView cannot restore this window too.
         super().__init__(None, Qt.WindowType.Window)
@@ -81,8 +91,16 @@ class DropletAnalysisWindow(QMainWindow):
         # ===== Auto-save context =====
         self.source_image_path = source_image_path
         self.item_path = item_path
+        self.project_name = project_name
+        self.item_name = item_name
 
-        self.setWindowTitle("Droplet Analysis")
+        self.setWindowTitle(
+            self.build_window_title(
+                source_image_path=source_image_path,
+                project_name=project_name,
+                item_name=item_name,
+            )
+        )
         self.resize(1100, 760)
         self.setMinimumSize(700, 500)
 
@@ -175,6 +193,32 @@ class DropletAnalysisWindow(QMainWindow):
         ]
 
         self.view_model.load_image_from_pixmap(self.input_pixmap)
+
+    @staticmethod
+    def build_window_title(
+        source_image_path=None,
+        project_name=None,
+        item_name=None,
+    ):
+        """Build a descriptive title from the image's project context."""
+        project = project_name.strip() if isinstance(project_name, str) else ""
+        item = item_name.strip() if isinstance(item_name, str) else ""
+        image_name = ""
+
+        if isinstance(source_image_path, str) and source_image_path.strip():
+            image_path = Path(source_image_path)
+            image_name = image_path.name
+            media_dir = image_path.parent
+
+            # Project images use <Project>/<Item>/Image/<Image>.
+            if media_dir.name.casefold() == "image":
+                item = media_dir.parent.name or item
+                project = media_dir.parent.parent.name or project
+
+        context = [name for name in (project, item, image_name) if name]
+        if not context:
+            return "Droplet Analysis"
+        return f"Droplet Analysis - {'/'.join(context)}"
 
     def showEvent(self, event):
         super().showEvent(event)

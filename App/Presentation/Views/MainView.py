@@ -526,7 +526,15 @@ class MainView(QMainWindow):
             from App.Presentation.ViewModels.FeatureViewModel.ImageEditorViewModel import ImageEditorViewModel
             from App.Presentation.Views.Widgets.FileEditorWorkspace.ImageEditor import ImageEditor
 
-            view_model = ImageEditorViewModel(project_name=project_name, item_name=os.path.basename(relative_path))
+            media_dir = os.path.dirname(full_path)
+            if os.path.basename(media_dir).casefold() == "image":
+                item_name = os.path.basename(os.path.dirname(media_dir))
+            else:
+                item_name = os.path.basename(media_dir)
+            view_model = ImageEditorViewModel(
+                project_name=project_name,
+                item_name=item_name,
+            )
             editor = ImageEditor(view_model)
             editor.setProperty("project_name", project_name)
             editor.setProperty("file_name", os.path.basename(full_path))

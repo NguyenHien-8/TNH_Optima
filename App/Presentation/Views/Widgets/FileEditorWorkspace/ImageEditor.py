@@ -354,14 +354,22 @@ class ImageEditor(QWidget):
             from App.Presentation.ViewModels.FeatureViewModel.DropletAnalysisViewModel import DropletAnalysisViewModel
 
             droplet_view_model = DropletAnalysisViewModel()
-            source_image_path = self.property("full_path")
+            source_image_path = getattr(
+                self.view_model, "current_image_path", None
+            ) or self.property("full_path")
             if not isinstance(source_image_path, str):
                 source_image_path = None
+            project_name = self.property("project_name") or getattr(
+                self.view_model, "project_name", None
+            )
+            item_name = getattr(self.view_model, "item_name", None)
             droplet_window = DropletAnalysisWindow(
                 droplet_view_model,
                 self.current_pixmap,
                 parent=self.window(),
                 source_image_path=source_image_path,
+                project_name=project_name,
+                item_name=item_name,
             )
             self.droplet_windows.append(droplet_window)
             droplet_window.show()
