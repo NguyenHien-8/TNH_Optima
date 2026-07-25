@@ -12,6 +12,10 @@ from PyQt6.QtCore import Qt, QEvent, pyqtSlot, QFileInfo, QTimer, QPoint
 from PyQt6.QtGui import QCloseEvent
 
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
+from App.Infrastructure.Helpers.PathHelper import (
+    canonical_path,
+    is_path_within,
+)
 from App.Infrastructure.Helpers.WindowOwnershipHelper import configure_secondary_window
 from App.Presentation.ViewModels.MainViewModel import MainViewModel
 from App.Presentation.Views.MenuBar import MenuBar
@@ -198,6 +202,9 @@ class MainView(QMainWindow):
         self.view_model.item_removed.connect(self.sidebar.remove_item_node)
         self.view_model.item_renamed.connect(self.sidebar.rename_item_node)
         self.view_model.file_loaded.connect(self._on_file_loaded)
+        self.view_model.sidebar_loading_changed.connect(
+            self.sidebar.set_loading_source
+        )
         self.view_model.camera_error.connect(self.show_error)
         self.view_model.open_editor_requested.connect(self._on_open_editor_requested)
         self.view_model.file_renamed.connect(self._on_file_renamed)
@@ -246,6 +253,33 @@ class MainView(QMainWindow):
     def _is_video_editor(widget):
         return widget is not None and widget.property("editor_kind") == "video"
 
+    def _track_video_editor_loading(self, editor):
+        loading_token = f"video-editor:{id(editor)}"
+        start_loading = lambda: self.sidebar.set_loading_source(
+            loading_token,
+            True,
+        )
+        finish_loading = lambda: self.sidebar.set_loading_source(
+            loading_token,
+            False,
+        )
+        editor.media_load_started.connect(start_loading)
+        editor.media_load_finished.connect(finish_loading)
+        editor.destroyed.connect(lambda *_: finish_loading())
+        if editor.is_media_loading():
+            start_loading()
+
+    def _activate_video_playback(self, active_editor):
+        """Keep at most one VideoEditor decoder active at a time."""
+        tab_widget = self.editor_workspace.tab_widget
+        for index in range(tab_widget.count()):
+            editor = tab_widget.widget(index)
+            if (
+                editor is not active_editor
+                and self._is_video_editor(editor)
+            ):
+                editor.pause_playback(release_resources=True)
+
     @pyqtSlot(str)
     def _close_editor_by_path(self, full_path):
         norm_target = os.path.normpath(full_path)
@@ -261,10 +295,13 @@ class MainView(QMainWindow):
     @pyqtSlot(str, str)
     def _on_open_editor_requested(self, full_path, project_name):
         project_path = self.view_model.get_project_path(project_name)
-        if not project_path or not full_path.startswith(project_path):
+        relative_path = self.view_model.get_project_relative_path(
+            project_name,
+            full_path,
+        )
+        if not project_path or relative_path is None:
             QMessageBox.warning(self, "Error", f"Cannot determine relative path for {full_path}")
             return
-        relative_path = os.path.relpath(full_path, project_path)
         self.pending_restore_editors.append((project_name, relative_path))
         if not self.restoring_in_progress:
             self.restoring_in_progress = True
@@ -491,13 +528,33 @@ class MainView(QMainWindow):
 
     def action_open_file_in_editor(self, project_name, relative_path):
         if project_name is None or project_name not in self.view_model.get_all_project_names():
-            full_path = relative_path
+            full_path = canonical_path(relative_path)
             project_name = None
+            project_path = None
         else:
-            full_path = self.view_model.get_item_path(project_name, relative_path)
+            project_path = self.view_model.get_project_path(project_name)
+            if os.path.isabs(relative_path):
+                full_path = canonical_path(relative_path)
+            else:
+                full_path = self.view_model.get_item_path(
+                    project_name,
+                    relative_path,
+                )
+            full_path = canonical_path(full_path)
+            if not full_path or not is_path_within(full_path, project_path):
+                # Files selected with an editor's Open button may be outside
+                # the active Project. Keep them standalone instead of
+                # assigning an invalid Project context.
+                project_name = None
+                project_path = None
 
         if not full_path or not os.path.exists(full_path):
             QMessageBox.warning(self, "Error", "File not found.")
+            if self.restoring_in_progress:
+                self._process_next_pending_editor()
+            return
+
+        if self.editor_workspace.activate_tab_by_path(full_path):
             if self.restoring_in_progress:
                 self._process_next_pending_editor()
             return
@@ -510,7 +567,15 @@ class MainView(QMainWindow):
         if ext in video_exts:
             from App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor import VideoEditor
 
-            editor = VideoEditor(full_path, project_name=project_name)
+            editor = VideoEditor(
+                full_path,
+                project_name=project_name,
+                project_path=project_path,
+            )
+            self._track_video_editor_loading(editor)
+            editor.playback_requested.connect(
+                lambda current=editor: self._activate_video_playback(current)
+            )
             editor.setProperty("editor_kind", "video")
             editor.setProperty("project_name", project_name)
             editor.setProperty("file_name", os.path.basename(full_path))
@@ -535,6 +600,9 @@ class MainView(QMainWindow):
                 project_name=project_name,
                 item_name=item_name,
             )
+            view_model.loading_changed.connect(
+                self.sidebar.set_loading_source
+            )
             editor = ImageEditor(view_model)
             editor.setProperty("project_name", project_name)
             editor.setProperty("file_name", os.path.basename(full_path))
@@ -542,11 +610,6 @@ class MainView(QMainWindow):
             editor.sig_open_video.connect(self.action_open_file_in_editor)
             view_model.load_image(full_path)
             self.editor_workspace.add_editor_tab(editor, os.path.basename(full_path), project_name, full_path)
-            if self.restoring_in_progress:
-                self._process_next_pending_editor()
-            return
-
-        if self.editor_workspace.activate_tab_by_path(full_path):
             if self.restoring_in_progress:
                 self._process_next_pending_editor()
             return
@@ -657,9 +720,12 @@ class MainView(QMainWindow):
         editor_widget.setProperty("project_name", project_name)
 
         self.editor_workspace.add_editor_tab(editor_widget, file_name, project_name, full_path)
+        loading_token = f"text-render:{id(editor_widget)}"
+        self.sidebar.set_loading_source(loading_token, True)
         self._pending_text_loads[editor_widget] = {
             "content": content,
             "offset": 0,
+            "loading_token": loading_token,
         }
         self._append_text_chunk(editor_widget)
 
@@ -673,7 +739,12 @@ class MainView(QMainWindow):
         try:
             editor_widget.insertPlainText(content[start:end])
         except RuntimeError:
-            self._pending_text_loads.pop(editor_widget, None)
+            state = self._pending_text_loads.pop(editor_widget, None)
+            if state is not None:
+                self.sidebar.set_loading_source(
+                    state["loading_token"],
+                    False,
+                )
             return
 
         if end < len(content):
@@ -684,6 +755,7 @@ class MainView(QMainWindow):
         editor_widget.setReadOnly(False)
         editor_widget.document().setModified(False)
         self._pending_text_loads.pop(editor_widget, None)
+        self.sidebar.set_loading_source(state["loading_token"], False)
         if self.restoring_in_progress:
             self._process_next_pending_editor()
 
@@ -755,7 +827,12 @@ class MainView(QMainWindow):
     def _close_tab_safely(self, index) -> bool:
         widget = self.editor_workspace.tab_widget.widget(index)
         was_loading = widget in self._pending_text_loads
-        self._pending_text_loads.pop(widget, None)
+        pending_load = self._pending_text_loads.pop(widget, None)
+        if pending_load is not None:
+            self.sidebar.set_loading_source(
+                pending_load["loading_token"],
+                False,
+            )
         file_name = widget.property("file_name") if hasattr(widget, "property") else None
 
         if self._is_video_editor(widget):

@@ -5,16 +5,138 @@
 ########################################################
 import json
 import os
-from PyQt6.QtWidgets import (QDockWidget, QTabWidget, QWidget, QVBoxLayout,
-                             QTreeWidget, QTreeWidgetItem, QMenu, QAbstractItemView, QStyle, QProxyStyle)
-from PyQt6.QtGui import QDrag, QIcon, QColor
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QDockWidget,
+    QMenu,
+    QProxyStyle,
+    QSizePolicy,
+    QStyle,
+    QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+from PyQt6.QtGui import QColor, QDrag, QIcon, QLinearGradient, QPainter
 from PyQt6.QtCore import (
-    Qt, pyqtSignal, pyqtSlot, QMimeData, QFileSystemWatcher, QSize, QTimer,
-    QByteArray, QRect,
+    QAbstractAnimation,
+    QByteArray,
+    QEasingCurve,
+    QFileSystemWatcher,
+    QMimeData,
+    QRect,
+    QSize,
+    QTimer,
+    QVariantAnimation,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
 
 from App.Infrastructure.Helpers.ResourceHelper import resource_path
 from App.Presentation.ViewModels.Workers import FunctionWorker
+
+
+class SidebarShimmerBar(QWidget):
+    """A tiny width-responsive shimmer that consumes no CPU while idle."""
+
+    HEIGHT = 3
+    DURATION_MS = 1100
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SidebarShimmerBar")
+        self.setFixedHeight(self.HEIGHT)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self._active = False
+        self._phase = 0.0
+
+        self._animation = QVariantAnimation(self)
+        self._animation.setStartValue(0.0)
+        self._animation.setEndValue(1.0)
+        self._animation.setDuration(self.DURATION_MS)
+        self._animation.setLoopCount(-1)
+        self._animation.setEasingCurve(QEasingCurve.Type.Linear)
+        self._animation.valueChanged.connect(self._on_animation_value)
+        self.hide()
+
+    def set_active(self, active):
+        active = bool(active)
+        self._active = active
+        if active:
+            self.show()
+            if self.isVisible():
+                self._start_animation()
+            return
+
+        self._animation.stop()
+        self._phase = 0.0
+        self.hide()
+
+    def is_active(self):
+        return self._active
+
+    def is_animation_running(self):
+        return (
+            self._animation.state()
+            == QAbstractAnimation.State.Running
+        )
+
+    def phase(self):
+        return self._phase
+
+    def _start_animation(self):
+        if not self.is_animation_running():
+            self._animation.start()
+
+    def _on_animation_value(self, value):
+        self._phase = float(value)
+        self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._active:
+            self._start_animation()
+
+    def hideEvent(self, event):
+        self._animation.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        del event
+        if self.width() <= 0:
+            return
+
+        painter = QPainter(self)
+        base_color = QColor("#0078D7")
+        base_color.setAlpha(62)
+        painter.fillRect(self.rect(), base_color)
+
+        highlight_width = max(44.0, self.width() * 0.28)
+        center = (
+            -highlight_width
+            + self._phase * (self.width() + 2.0 * highlight_width)
+        )
+        gradient = QLinearGradient(
+            center - highlight_width,
+            0,
+            center + highlight_width,
+            0,
+        )
+        gradient.setColorAt(0.0, QColor(116, 201, 255, 0))
+        gradient.setColorAt(0.35, QColor(116, 201, 255, 105))
+        gradient.setColorAt(0.5, QColor(225, 248, 255, 245))
+        gradient.setColorAt(0.65, QColor(116, 201, 255, 105))
+        gradient.setColorAt(1.0, QColor(116, 201, 255, 0))
+        painter.fillRect(self.rect(), gradient)
 
 
 class DropIndicatorProxyStyle(QProxyStyle):
@@ -77,9 +199,8 @@ class DraggableTreeWidget(QTreeWidget):
         self._custom_drop_target_item = None
         self._custom_drop_position = None
         self._drop_indicator_style = DropIndicatorProxyStyle(
-            self.style(),
-            self.DROP_INDICATOR_COLOR,
-            self.DROP_INDICATOR_HEIGHT,
+            color=self.DROP_INDICATOR_COLOR,
+            height=self.DROP_INDICATOR_HEIGHT,
         )
         self.setStyle(self._drop_indicator_style)
         self._dragged_tree_item = None
@@ -632,7 +753,11 @@ class ProjectSidebar(QDockWidget):
         super().__init__("Project Manager", parent)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         self.setMinimumWidth(100)
-        self.setMaximumWidth(1000)
+        self.setMaximumWidth(16777215)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
 
         self.app_config = {
             "sub_folders": ["Image", "Video"],
@@ -655,12 +780,25 @@ class ProjectSidebar(QDockWidget):
         self._media_name_cache = {}
         self._pending_media_refreshes = set()
         self._shutting_down = False
+        self._loading_sources = set()
 
         container = QWidget()
+        container.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.loading_bar = SidebarShimmerBar(container)
+        layout.addWidget(self.loading_bar)
 
         self.tabs = QTabWidget()
+        self.tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
 
         self.tab_project = QWidget()
@@ -673,6 +811,26 @@ class ProjectSidebar(QDockWidget):
 
         layout.addWidget(self.tabs)
         self.setWidget(container)
+
+    @pyqtSlot(str, bool)
+    def set_loading_source(self, source, active):
+        """Keep the busy bar visible until every tracked source is finished."""
+        if not isinstance(source, str) or not source:
+            return
+        if active:
+            self._loading_sources.add(source)
+        else:
+            self._loading_sources.discard(source)
+        self.loading_bar.set_active(bool(self._loading_sources))
+
+    def is_loading(self):
+        return bool(self._loading_sources)
+
+    def _sync_media_scan_loading(self):
+        self.set_loading_source(
+            "sidebar-media-scans",
+            bool(self._media_scan_queue or self._media_scan_workers),
+        )
 
     def _init_icons(self):
         style = self.style()
@@ -1000,6 +1158,7 @@ class ProjectSidebar(QDockWidget):
             self._media_scan_queue.pop(media_dir, None)
             self._media_name_cache.pop(media_dir, None)
             self._pending_media_refreshes.discard(media_dir)
+        self._sync_media_scan_loading()
 
     @pyqtSlot(str, str)
     def unwatch_item_media(self, project_name, folder_name):
@@ -1200,6 +1359,7 @@ class ProjectSidebar(QDockWidget):
             )
             worker.finished.connect(worker.deleteLater)
             worker.start()
+        self._sync_media_scan_loading()
 
     @staticmethod
     def _scan_media_directory(media_dir, media_type):
@@ -1224,6 +1384,7 @@ class ProjectSidebar(QDockWidget):
             if info and not self._shutting_down:
                 self._media_scan_queue[media_dir] = info
         self._start_queued_media_scans()
+        self._sync_media_scan_loading()
 
     def _apply_media_scan(
         self, project_name, item_name, media_type, media_dir, names
@@ -1310,6 +1471,7 @@ class ProjectSidebar(QDockWidget):
         if not still_running:
             self._media_scan_workers.clear()
             self._media_name_cache.clear()
+            self.set_loading_source("sidebar-media-scans", False)
         return not still_running
 
     def remove_project_item(self, project_name):

@@ -11,6 +11,12 @@ import threading
 from functools import wraps
 from pathlib import Path
 
+from App.Infrastructure.Helpers.PathHelper import (
+    canonical_path,
+    is_path_within,
+    relative_path_within,
+)
+
 
 def _synchronized(method):
     @wraps(method)
@@ -52,12 +58,7 @@ class ProjectManager:
 
     @staticmethod
     def _is_within(path, parent):
-        try:
-            return os.path.commonpath(
-                (os.path.abspath(path), os.path.abspath(parent))
-            ) == os.path.abspath(parent)
-        except (TypeError, ValueError):
-            return False
+        return is_path_within(path, parent)
 
     def _cleanup_dict(self, project_name):
         if project_name in self.current_projects:
@@ -185,11 +186,13 @@ class ProjectManager:
         
     @_synchronized
     def open_project(self, folder_path):
-        project_name = os.path.basename(folder_path)
+        normalized_folder = canonical_path(folder_path)
+        if normalized_folder is None or not os.path.isdir(normalized_folder):
+            return False, "Invalid Project Structure", []
 
-        abs_folder = os.path.abspath(folder_path)
-        abs_temp = os.path.abspath(self.temp_root)
-        status = 'TEMP' if self._is_within(abs_folder, abs_temp) else 'SAVED'
+        folder_path = normalized_folder
+        project_name = os.path.basename(folder_path)
+        status = 'TEMP' if self._is_within(folder_path, self.temp_root) else 'SAVED'
 
         if project_name in self.current_projects:
             self.current_projects[project_name] = folder_path
@@ -217,6 +220,12 @@ class ProjectManager:
 
     def get_project_path(self, project_name):
         return self.current_projects.get(project_name)
+
+    def get_project_relative_path(self, project_name, full_path):
+        project_path = self._get_project_root(project_name)
+        if not project_path:
+            return None
+        return relative_path_within(full_path, project_path)
 
     @_synchronized
     def close_project(self, project_name):
@@ -289,8 +298,12 @@ class ProjectManager:
 
     def get_file_path(self, project_name, relative_path):
         project_path = self._get_project_root(project_name)
-        if project_path:
-            return os.path.join(project_path, relative_path)
+        if not project_path or not isinstance(relative_path, str):
+            return None
+
+        full_path = canonical_path(os.path.join(project_path, relative_path))
+        if full_path and self._is_within(full_path, project_path):
+            return full_path
         return None
 
     def is_project_temp(self, project_name):

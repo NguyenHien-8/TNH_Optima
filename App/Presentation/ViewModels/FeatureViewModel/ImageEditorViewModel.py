@@ -11,6 +11,7 @@ class ImageEditorViewModel(QObject):
     image_loaded = pyqtSignal(QPixmap)
     error_occurred = pyqtSignal(str)
     workers_idle = pyqtSignal()
+    loading_changed = pyqtSignal(str, bool)
 
     def __init__(self, project_name=None, item_name=None):
         super().__init__()
@@ -27,6 +28,7 @@ class ImageEditorViewModel(QObject):
         self._start_worker(
             lambda: QImage(file_path),
             lambda image: self._on_image_decoded(file_path, image),
+            track_loading=True,
         )
 
     def _on_image_decoded(self, file_path, image):
@@ -50,9 +52,18 @@ class ImageEditorViewModel(QObject):
         else:
             self.error_occurred.emit("No image loaded to save.")
 
-    def _start_worker(self, function, callback):
+    def _start_worker(self, function, callback, track_loading=False):
         worker = FunctionWorker(function)
         self._workers.add(worker)
+        if track_loading:
+            loading_token = f"image-worker:{id(worker)}"
+            self.loading_changed.emit(loading_token, True)
+            worker.finished.connect(
+                lambda token=loading_token: self.loading_changed.emit(
+                    token,
+                    False,
+                )
+            )
         worker.result_ready.connect(callback)
         worker.error_occurred.connect(self.error_occurred)
         worker.finished.connect(lambda: self._finish_worker(worker))

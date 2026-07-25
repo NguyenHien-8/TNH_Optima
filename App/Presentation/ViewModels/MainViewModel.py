@@ -39,6 +39,7 @@ class MainViewModel(QObject):
     open_editor_requested = pyqtSignal(str, str)  # full_path, project_name
     file_renamed = pyqtSignal(str, str, str, str, str)  # project_name, item_name, media_type, old_name, new_name
     session_restored = pyqtSignal(list)
+    sidebar_loading_changed = pyqtSignal(str, bool)
 
     # === SIGNAL FOR SPLASH SCREEN ===
     progress_update = pyqtSignal(str)
@@ -111,7 +112,7 @@ class MainViewModel(QObject):
         worker = SessionRestoreWorker(self.session_manager, self.project_manager.temp_root)
         worker.restored.connect(self._apply_restored_session)
         worker.error_occurred.connect(self.error_occurred)
-        self.start_worker(worker)
+        self.start_worker(worker, show_sidebar_loading=True)
 
     @pyqtSlot(object)
     def _apply_restored_session(self, result):
@@ -213,6 +214,12 @@ class MainViewModel(QObject):
     def get_project_path(self, project_name: str) -> str:
         return self.project_manager.current_projects.get(project_name, "")
 
+    def get_project_relative_path(self, project_name: str, full_path: str):
+        return self.project_manager.get_project_relative_path(
+            project_name,
+            full_path,
+        )
+
     def is_project_temp(self, project_name: str) -> bool:
         return self.project_manager.is_project_temp(project_name)
 
@@ -271,21 +278,39 @@ class MainViewModel(QObject):
     def on_editor_closed(self):
         self.camera_manager.release()
 
-    def start_worker(self, worker):
+    def start_worker(self, worker, show_sidebar_loading=False):
         self.active_workers.append(worker)
         worker.finished.connect(self.cleanup_worker)
         worker.finished.connect(worker.deleteLater)
+        if show_sidebar_loading:
+            loading_token = f"main-worker:{id(worker)}"
+            self.sidebar_loading_changed.emit(loading_token, True)
+            worker.finished.connect(
+                lambda token=loading_token: self.sidebar_loading_changed.emit(
+                    token,
+                    False,
+                )
+            )
         worker.start()
 
     def _run_background_task(
-        self, status_message, function, callback, *args, delay_ms=0
+        self,
+        status_message,
+        function,
+        callback,
+        *args,
+        delay_ms=0,
+        show_sidebar_loading=False,
     ):
         """Run blocking model/file work and marshal its result back to the UI thread."""
         def launch():
             worker = FunctionWorker(function, *args)
             worker.result_ready.connect(callback)
             worker.error_occurred.connect(self.error_occurred)
-            self.start_worker(worker)
+            self.start_worker(
+                worker,
+                show_sidebar_loading=show_sidebar_loading,
+            )
 
         self.status_message.emit(status_message)
         if delay_ms > 0:
@@ -374,9 +399,12 @@ class MainViewModel(QObject):
         def on_opened(result):
             success, project_name, items = result
             if success:
-                self.project_added.emit(project_name, folder_path)
+                project_path = self.project_manager.get_project_path(
+                    project_name
+                )
+                self.project_added.emit(project_name, project_path)
                 for item_name in items:
-                    item_path = os.path.join(folder_path, item_name)
+                    item_path = os.path.join(project_path, item_name)
                     self.item_added.emit(project_name, item_name, item_path)
                     self._add_opened_item(project_name, item_name)
                 self.status_message.emit(f"Project '{project_name}' loaded.")
@@ -388,6 +416,7 @@ class MainViewModel(QObject):
             self.project_manager.open_project,
             on_opened,
             folder_path,
+            show_sidebar_loading=True,
         )
 
     def handle_open_item(self, project_name: str, folder_path: str):
@@ -742,7 +771,7 @@ class MainViewModel(QObject):
     def _load_file(self, full_path: str, project_name: str):
         worker = FileLoaderWorker(full_path, project_name)
         worker.sig_loaded.connect(self.file_loaded)
-        self.start_worker(worker)
+        self.start_worker(worker, show_sidebar_loading=True)
         self.status_message.emit(f"Loading file...")
 
     def handle_save_file_content(self, content: str, project_name: str, file_name: str, full_path: str):
