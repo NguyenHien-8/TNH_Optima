@@ -1,21 +1,6 @@
 # TNH Optima 1.1.0 — Run Commands
 
-## Chạy source
-
-Từ thư mục repository `VCA_Optima` với virtual environment đã kích hoạt:
-
-```powershell
-python .\Release_1.1.0\main.py
-```
-
-Hoặc chuyển vào đúng release trước khi chạy:
-
-```powershell
-Set-Location .\Release_1.1.0
-python .\main.py
-```
-
-## Tạo virtual environment
+## Create a virtual environment
 
 ```powershell
 python -m venv venv
