@@ -9,12 +9,12 @@ import json
 import time
 import threading
 from functools import wraps
-from pathlib import Path
 
 from App.Infrastructure.Helpers.PathHelper import (
     canonical_path,
     is_path_within,
     relative_path_within,
+    user_documents_path,
 )
 
 
@@ -38,8 +38,10 @@ class ProjectManager:
         self.item_states = {}
         self._lock = threading.RLock()
 
-        documents_path = Path.home() / "Documents" / "TNH Optima Projects"
-        self.temp_root = str(documents_path)
+        default_projects_path = (
+            user_documents_path() / "TNH Optima Projects"
+        )
+        self.temp_root = str(default_projects_path)
         os.makedirs(self.temp_root, exist_ok=True)
 
     def _get_project_root(self, project_name):

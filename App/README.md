@@ -28,6 +28,7 @@
 - File Editor và Droplet Analysis là các top-level window độc lập được đăng ký với MainView; Analysis window có `WA_DeleteOnClose` để giải phóng instance đã đóng. ImageEditor truyền source path tách biệt với owner nên lưu kết quả phân tích vẫn đúng Item.
 - OpenCV, NumPy, Matplotlib và các editor nặng chỉ được import khi feature tương ứng được mở.
 - File text được ghi nguyên tử; SQLite dùng context manager; đường dẫn và tên tài nguyên được kiểm tra trước thao tác phá hủy.
+- Project mới chưa `Save As` dùng một đường dẫn mặc định xác định theo user Windows hiện tại: `PathHelper.user_documents_path()` gọi `SHGetKnownFolderPath(FOLDERID_Documents)`, sau đó nối `TNH Optima Projects/<ProjectName>`. Trên cấu hình Windows thông thường, kết quả là `C:\Users\<WindowsUser>\Documents\TNH Optima Projects\<ProjectName>`; nếu Windows, domain policy hoặc OneDrive đã chuyển Documents thì API trả về đúng vị trí Documents mà Explorer đang sử dụng. Khi Windows API không khả dụng, thuật toán lần lượt fallback về `%USERPROFILE%\Documents` rồi `Path.home()/Documents`. `ProjectManager` tạo thư mục gốc nếu chưa có, ghi `config.json` cho Project và giữ trạng thái `TEMP` cho đến khi `Save As`.
 - `CrashHandler` ghi rotating log, cài exception hook cho main/background thread và bật `faulthandler`.
 
 ## Data Flow
@@ -44,3 +45,4 @@
 10. Startup đặt process AppUserModelID → mở File Editor/Droplet Analysis → đăng ký với MainView → áp dụng taskbar style → Windows gom thumbnail dưới một biểu tượng TNH Optima.
 11. MainView chuyển sang minimized → chủ động minimize các secondary window đã đăng ký; restore MainView chỉ khôi phục MainView → chọn thumbnail cửa sổ phụ mới khôi phục/activate đúng window đó.
 12. Khi đóng, editor chờ worker hoàn tất theo tín hiệu, sau đó giải phóng camera, serial, multimedia, Matplotlib và lưu session.
+13. Create Project không có `specific_path` → lấy Documents qua Windows Known Folder API → fallback an toàn nếu cần → tạo `TNH Optima Projects/<ProjectName>/config.json` → đăng ký đường dẫn hiện tại với trạng thái `TEMP`; `Save As` mới sao chép Project tới vị trí do người dùng chọn và chuyển trạng thái thành `SAVED`.

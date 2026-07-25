@@ -3,8 +3,94 @@
 # Author: TRAN NGUYEN HIEN
 # Email: trannguyenhien29085@gmail.com
 ########################################################
+import ctypes
 import os
+import sys
+import uuid
+from pathlib import Path
 from typing import Optional
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = (
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_ushort),
+        ("Data3", ctypes.c_ushort),
+        ("Data4", ctypes.c_ubyte * 8),
+    )
+
+    @classmethod
+    def from_string(cls, value):
+        guid_bytes = uuid.UUID(value).bytes_le
+        return cls.from_buffer_copy(guid_bytes)
+
+
+_FOLDERID_DOCUMENTS = _GUID.from_string(
+    "FDD39AD0-238F-46AF-ADB4-6C85480369C7"
+)
+
+
+def _get_windows_documents_path() -> Path:
+    """Resolve the current user's Documents known folder through Windows."""
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    path_pointer = ctypes.c_wchar_p()
+
+    get_known_folder_path = shell32.SHGetKnownFolderPath
+    get_known_folder_path.argtypes = (
+        ctypes.POINTER(_GUID),
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_wchar_p),
+    )
+    get_known_folder_path.restype = ctypes.c_long
+
+    co_task_mem_free = ole32.CoTaskMemFree
+    co_task_mem_free.argtypes = (ctypes.c_void_p,)
+    co_task_mem_free.restype = None
+
+    result = get_known_folder_path(
+        ctypes.byref(_FOLDERID_DOCUMENTS),
+        0,
+        None,
+        ctypes.byref(path_pointer),
+    )
+    if result != 0:
+        raise OSError(
+            f"SHGetKnownFolderPath(FOLDERID_Documents) failed: 0x{result & 0xFFFFFFFF:08X}"
+        )
+
+    try:
+        if not path_pointer.value:
+            raise OSError("Windows returned an empty Documents path.")
+        return Path(path_pointer.value)
+    finally:
+        co_task_mem_free(ctypes.cast(path_pointer, ctypes.c_void_p))
+
+
+def user_documents_path() -> Path:
+    """
+    Return the current user's Documents directory.
+
+    Windows Known Folder resolution is authoritative because Documents can be
+    redirected by Windows, a domain policy, or OneDrive. USERPROFILE is kept as
+    a deterministic fallback for older or restricted Windows environments.
+    """
+    if sys.platform.startswith("win"):
+        try:
+            return _get_windows_documents_path()
+        except (
+            AttributeError,
+            OSError,
+            TypeError,
+            ValueError,
+            ctypes.ArgumentError,
+        ):
+            user_profile = os.environ.get("USERPROFILE")
+            if user_profile:
+                return Path(user_profile) / "Documents"
+
+    return Path.home() / "Documents"
 
 
 def canonical_path(path) -> Optional[str]:

@@ -2,12 +2,15 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from App.Infrastructure.Helpers import PathHelper
 from App.Infrastructure.Helpers.PathHelper import (
     canonical_path,
     is_path_within,
     project_media_item_path,
     relative_path_within,
+    user_documents_path,
 )
 from App.Models.ProjectManager import ProjectManager
 
@@ -90,7 +93,11 @@ class PathHandlingTests(unittest.TestCase):
         self.assertEqual(item_path, canonical_path(self.item))
 
     def test_project_manager_rejects_relative_path_escape(self):
-        manager = ProjectManager()
+        with patch(
+            "App.Models.ProjectManager.user_documents_path",
+            return_value=self.root,
+        ):
+            manager = ProjectManager()
         manager.current_projects["Project"] = str(self.project)
 
         self.assertEqual(
@@ -106,6 +113,61 @@ class PathHandlingTests(unittest.TestCase):
                 os.path.join("..", "outside.png"),
             )
         )
+
+    def test_windows_documents_uses_known_folder_api(self):
+        redirected_documents = self.root / "Redirected Documents"
+
+        with (
+            patch.object(PathHelper.sys, "platform", "win32"),
+            patch.object(
+                PathHelper,
+                "_get_windows_documents_path",
+                return_value=redirected_documents,
+            ) as known_folder,
+        ):
+            result = user_documents_path()
+
+        self.assertEqual(result, redirected_documents)
+        known_folder.assert_called_once_with()
+
+    def test_windows_documents_falls_back_to_user_profile(self):
+        user_profile = self.root / "WindowsUser"
+
+        with (
+            patch.object(PathHelper.sys, "platform", "win32"),
+            patch.object(
+                PathHelper,
+                "_get_windows_documents_path",
+                side_effect=OSError("Known Folder API unavailable"),
+            ),
+            patch.dict(
+                PathHelper.os.environ,
+                {"USERPROFILE": str(user_profile)},
+                clear=True,
+            ),
+        ):
+            result = user_documents_path()
+
+        self.assertEqual(result, user_profile / "Documents")
+
+    def test_new_project_uses_documents_projects_folder(self):
+        documents = self.root / "Documents"
+
+        with patch(
+            "App.Models.ProjectManager.user_documents_path",
+            return_value=documents,
+        ):
+            manager = ProjectManager()
+
+        success, project_path = manager.create_project("Untitled-1")
+        expected_root = documents / "TNH Optima Projects"
+        expected_project = expected_root / "Untitled-1"
+
+        self.assertTrue(success)
+        self.assertEqual(manager.temp_root, str(expected_root))
+        self.assertEqual(project_path, str(expected_project))
+        self.assertTrue((expected_project / "config.json").is_file())
+        self.assertTrue(manager.is_project_temp("Untitled-1"))
 
 
 if __name__ == "__main__":
