@@ -1,6 +1,6 @@
 # Project Structure
 ```
-Ver1.1/                     
+Ver1.1.1/                     
 ├── App/
 │   ├── __init__.py
 │   ├── Presentation/
@@ -88,15 +88,20 @@ Ver1.1/
 │   │   ├── __init__.py
 │   │   ├── Helpers/
 │   │   │    ├── __init__.py 
+│   │   │    ├── PathHelper.py
 │   │   │    ├── ResourceHelper.py
+│   │   │    └── WindowOwnershipHelper.py
 │   │   ├── Repositories/
 │   │   │    ├── __init__.py 
 │   │   │    ├── ConfigRepository.py
-│   │   │    └── SessionRepository.py
+│   │   │    ├── SessionRepository.py
+│   │   │    └── StoragePath.py
 │   │   ├── Persistence/
 │   │   │    ├── __init__.py 
 │   │   │    ├── ConfigStorage.db
 │   │   │    └── SessionData.db
+│   │   │ 
+│   │   └── CrashHandler.py
 │   │ 
 │   ├── ReSource/
 │   │   ├── __init__.py
@@ -111,6 +116,8 @@ Ver1.1/
 │   │   │    ├── MenuBarStyles.qss
 │   │   │    ├── HardwareDialogStyles.qss
 │   │   │    ├── MotorDialogStyles.qss
+│   │   │    ├── HardwareDialogStyles.qss
+│   │   │    ├── DropletAnalysisStyles.qss
 │   │   │    └── CameraDialogStyles.qss
 │   │   ├── Icon/  
 │   │   ├── Media/
@@ -146,13 +153,22 @@ Ver1.1/
 │   │   │    ├── video_file.svg
 │   │   │    ├── file_tnh.svg
 │   │   │    └── image_file.svg
+│   │   ├── SideBar/  
+│   │   │    ├── control_panel.svg
+│   │   │    └── filter.svg
 │   │   ├── app_icon.ico
 │   │   └── splash_screen.png
 │ 
 ├── venv/
+├── Document/
+├── tests/
 ├── .gitignore
 ├── __init__.py
-├── main.py  
+├── main.py build_installer.py 
+├── build_installer.py
+├── installer.iss
+├── Run Commands.md
+├── TNH_Optima.spec
 ├── requirements.txt
 ├── LICENSE
 ├── TNH_Optima.spec
