@@ -14,6 +14,14 @@ class ImageCanvas(QWidget):
     X_BOUNDS = (0.0, 5.0)
     Y_BOUNDS = (0.0, 3.0)
     MIN_RANGE = 0.1
+    BACKGROUND_COLOR = "#FFFFFF"
+    EMPTY_TEXT_COLOR = "#5F6368"
+    AXIS_COLOR = "#202124"
+    PLOT_BORDER_COLOR = "#6F6F6F"
+    AXIS_LABEL_POINT_SIZE = 15.0
+    X_TICK_LABEL_OFFSET = 14.0
+    Y_TICK_LABEL_GAP = 7.0
+    AXIS_LABEL_GAP = 1.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,14 +82,14 @@ class ImageCanvas(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        painter.fillRect(self.rect(), QColor("#202124"))
+        painter.fillRect(self.rect(), QColor(self.BACKGROUND_COLOR))
 
         plot_rect = self._plot_rect()
         if plot_rect.isEmpty():
             return
 
         if self._pixmap.isNull():
-            painter.setPen(QColor("#b0b0b0"))
+            painter.setPen(QColor(self.EMPTY_TEXT_COLOR))
             painter.drawText(
                 plot_rect,
                 Qt.AlignmentFlag.AlignCenter,
@@ -91,13 +99,13 @@ class ImageCanvas(QWidget):
 
         painter.drawPixmap(plot_rect, self._pixmap, self._source_rect())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(QColor("#c7c7c7"), 1.0))
+        painter.setPen(QPen(QColor(self.PLOT_BORDER_COLOR), 1.0))
         painter.drawRect(plot_rect)
         self._draw_axes(painter, plot_rect)
 
     def _draw_axes(self, painter, plot_rect):
-        painter.setPen(QColor("#d8d8d8"))
-        font_metrics = painter.fontMetrics()
+        painter.setPen(QColor(self.AXIS_COLOR))
+        tick_font_metrics = painter.fontMetrics()
 
         for index in range(6):
             ratio = index / 5.0
@@ -110,13 +118,14 @@ class ImageCanvas(QWidget):
                 QPoint(round(x), round(plot_rect.bottom() + 5)),
             )
             label = f"{value:.2g}"
-            label_width = font_metrics.horizontalAdvance(label)
+            label_width = tick_font_metrics.horizontalAdvance(label)
             painter.drawText(
                 round(x - label_width / 2),
-                round(plot_rect.bottom() + 20),
+                round(plot_rect.bottom() + self.X_TICK_LABEL_OFFSET),
                 label,
             )
 
+        max_y_tick_label_width = 0
         for index in range(4):
             ratio = index / 3.0
             value = self._ylim[0] + ratio * (
@@ -128,22 +137,43 @@ class ImageCanvas(QWidget):
                 QPoint(round(plot_rect.left()), round(y)),
             )
             label = f"{value:.2g}"
-            label_width = font_metrics.horizontalAdvance(label)
+            label_width = tick_font_metrics.horizontalAdvance(label)
+            max_y_tick_label_width = max(max_y_tick_label_width, label_width)
             painter.drawText(
-                round(plot_rect.left() - label_width - 9),
-                round(y + font_metrics.ascent() / 2),
+                round(plot_rect.left() - label_width - self.Y_TICK_LABEL_GAP),
+                round(y + tick_font_metrics.ascent() / 2),
                 label,
             )
 
         x_label = "x [mm]"
+        base_font = painter.font()
+        label_font = painter.font()
+        label_font.setPointSizeF(self.AXIS_LABEL_POINT_SIZE)
+        label_font.setBold(True)
+        painter.setFont(label_font)
+        font_metrics = painter.fontMetrics()
+        x_axis_label_y = (
+            plot_rect.bottom()
+            + self.X_TICK_LABEL_OFFSET
+            + tick_font_metrics.descent()
+            + self.AXIS_LABEL_GAP
+            + font_metrics.ascent()
+        )
         painter.drawText(
             round(plot_rect.center().x() - font_metrics.horizontalAdvance(x_label) / 2),
-            round(plot_rect.bottom() + 40),
+            round(x_axis_label_y),
             x_label,
         )
 
         painter.save()
-        painter.translate(16.0, plot_rect.center().y())
+        y_axis_label_x = (
+            plot_rect.left()
+            - max_y_tick_label_width
+            - self.Y_TICK_LABEL_GAP
+            - self.AXIS_LABEL_GAP
+            - font_metrics.height() / 2.0
+        )
+        painter.translate(round(y_axis_label_x), plot_rect.center().y())
         painter.rotate(-90.0)
         y_label = "y [mm]"
         painter.drawText(
@@ -152,6 +182,7 @@ class ImageCanvas(QWidget):
             y_label,
         )
         painter.restore()
+        painter.setFont(base_font)
 
     def _data_position(self, position):
         plot_rect = self._plot_rect()

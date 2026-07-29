@@ -142,6 +142,31 @@ class VideoEditorCaptureTests(unittest.TestCase):
         self.assertNotEqual(validation_thread_ids[0], gui_thread_id)
         editor.close()
 
+    def test_video_frame_probe_throttles_gui_thread_conversion(self):
+        editor = VideoEditor()
+        image = self._frame()
+
+        class FakeFrame:
+            def __init__(self):
+                self.to_image_calls = 0
+
+            def isValid(self):
+                return True
+
+            def toImage(self):
+                self.to_image_calls += 1
+                return image
+
+        frame = FakeFrame()
+
+        editor.on_video_frame_probed(frame)
+        editor.on_video_frame_probed(frame)
+        editor.on_video_frame_probed(frame)
+
+        self.assertEqual(frame.to_image_calls, 1)
+        self.assertFalse(editor.current_frame.isNull())
+        editor.close()
+
     def test_releasing_inactive_video_preserves_lazy_resume_state(self):
         editor = VideoEditor(str(self.video_file))
         editor.toggle_play()

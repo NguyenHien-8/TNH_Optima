@@ -2,30 +2,30 @@
 
 ## Project Overview
 
-Cửa sổ chính và các thành phần UI cấp cao, chịu trách nhiệm lắp ráp ViewModel, Sidebar, menus, dialogs và editor.
+Main window and high-level UI components responsible for assembling ViewModels, Sidebar, menus, dialogs, and editors.
 
 ## Annotated Directory Structure
 
-- `MainView.py` — application shell, signal wiring, restore và coordinated shutdown.
-- `MenuBar.py` — lắp ráp menu cấp cao.
-- `Dialog/` — cấu hình camera/hardware và dialog xác nhận.
-- `Widgets/` — Sidebar, workspace, editors, status và analysis window.
+- `MainView.py` — application shell, signal wiring, restore, and coordinated shutdown.
+- `MenuBar.py` — high-level menu assembly.
+- `Dialog/` — camera/hardware configuration and confirmation dialogs.
+- `Widgets/` — Sidebar, workspace, editors, status, and analysis window.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- `camera_dispatcher` được khởi tạo trước mọi deferred callback và chỉ nhận target có `receive_frame`.
-- Editor ảnh/video được lazy import theo extension.
-- Text lớn được đưa vào editor theo chunk bằng `QTimer`.
-- SideBar khởi tạo branch indicator từ kết quả scan nền, không yêu cầu người dùng click trước để phát hiện media.
-- MainView hoãn đóng nếu editor hoặc worker chưa an toàn, sau đó tự tiếp tục qua tín hiệu.
-- File Editor và Droplet Analysis dùng MainView làm logical owner nhưng giữ native window độc lập; helper đăng ký window và đồng bộ taskbar thumbnail policy trước lần show đầu và mỗi lần native handle được hiển thị lại.
+- `camera_dispatcher` is initialized before any deferred callbacks and accepts only targets with `receive_frame`.
+- Image/video editors are lazy-imported by extension.
+- Large text is inserted into the editor in chunks through `QTimer`.
+- SideBar initializes branch indicators from background scan results and does not require a user click before detecting media.
+- MainView defers close when editors or workers are not yet safe, then continues automatically by signal.
+- File Editor and Droplet Analysis use MainView as the logical owner while keeping independent native windows; the helper registers windows and synchronizes taskbar thumbnail policy before first show and whenever the native handle is shown again.
 
 ## Data Flow
 
-1. `MainViewModel` phát project/item/file/session signals.
-2. MainView kết nối signals đến Sidebar và EditorWorkspace.
-3. FileEditor/VideoEditor phát `media_created`; MainView nối trực tiếp tín hiệu này tới Sidebar.
-4. Sidebar selection thay đổi storage target của FileEditor.
-5. Mở secondary window → đăng ký với MainView + shared AppUserModelID/taskbar style → grouped preview; MainView minimize kéo các window phụ xuống nhưng restore chỉ mở MainView.
-6. Close event thu editor/expanded paths rồi cleanup và lưu session.
+1. `MainViewModel` emits project/item/file/session signals.
+2. MainView connects signals to Sidebar and EditorWorkspace.
+3. FileEditor/VideoEditor emits `media_created`; MainView connects this signal directly to Sidebar.
+4. Sidebar selection changes FileEditor's storage target.
+5. Open secondary window -> register with MainView + shared AppUserModelID/taskbar style -> grouped preview; MainView minimize also minimizes secondary windows, but restore opens only MainView.
+6. Close event collects editor/expanded paths, then cleans up and saves the session.

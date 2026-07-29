@@ -2,26 +2,26 @@
 
 ## Project Overview
 
-Dịch vụ media theo Item: lưu frame camera thành PNG và ghi stream thành MP4 mà không khóa UI.
+Per-Item media services: save camera frames as PNG and record streams as MP4 without blocking the UI.
 
 ## Annotated Directory Structure
 
-- `MediaManager.py` — facade thống nhất image/video.
-- `ImageCaptureManager.py` — tạo `Image/` và lưu `QImage` lossless.
-- `VideoRecorderManager.py` — state machine và recorder thread cho `Video/`.
+- `MediaManager.py` — unified image/video facade.
+- `ImageCaptureManager.py` — creates `Image/` and saves lossless `QImage` files.
+- `VideoRecorderManager.py` — state machine and recorder thread for `Video/`.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- File dùng timestamp đến microsecond để tránh ghi đè khi capture liên tiếp.
-- Video state machine gồm `IDLE`, `RECORDING`, `PAUSED`.
-- `VideoRecorderThread` dùng `deque(maxlen=5)`, mutex và wait condition; frame cũ bị bỏ khi encoder chậm.
-- OpenCV/NumPy được import trong recorder thread; `VideoWriter` luôn release trong `finally`.
-- Đóng editor chỉ request stop recorder; wrapper thread được giữ sống đến `finished`.
+- Files use microsecond timestamps to avoid overwrite during rapid captures.
+- The video state machine contains `IDLE`, `RECORDING`, and `PAUSED`.
+- `VideoRecorderThread` uses `deque(maxlen=5)`, a mutex, and a wait condition; stale frames are dropped when the encoder falls behind.
+- OpenCV/NumPy are imported inside the recorder thread; `VideoWriter` is always released in `finally`.
+- Closing an editor only requests recorder stop; the wrapper thread is kept alive until `finished`.
 
 ## Data Flow
 
-1. Camera dispatcher gửi `QImage` đến `FileEditorViewModel`.
-2. Capture chạy `QImage.save()` trong worker → trả filename → phát `media_created(Image)`.
-3. Record copy frame vào queue → recorder ghi MP4 → Stop chạy trong worker và release writer.
-4. Stop thành công trả filename → phát `media_created(Video)` → SideBar hiển thị file ngay.
+1. The camera dispatcher sends `QImage` frames to `FileEditorViewModel`.
+2. Capture runs `QImage.save()` in a worker -> returns filename -> emits `media_created(Image)`.
+3. Record copies frames into the queue -> recorder writes MP4 -> Stop runs in a worker and releases the writer.
+4. A successful Stop returns filename -> emits `media_created(Video)` -> SideBar shows the file immediately.

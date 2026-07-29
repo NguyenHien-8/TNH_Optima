@@ -2,47 +2,47 @@
 
 ## Project Overview
 
-`App` là package chính của VCA Optima Release 1.1.1. Mã nguồn được tổ chức theo hướng MVVM: giao diện PyQt6 ở `Presentation`, nghiệp vụ và thiết bị ở `Models`, lưu trữ và xử lý lỗi ở `Infrastructure`, còn tài nguyên đóng gói nằm trong `ReSource`.
+`App` is the main package for VCA Optima Release 1.1.1. The source is organized around MVVM: PyQt6 UI in `Presentation`, domain and device logic in `Models`, persistence and error handling in `Infrastructure`, and bundled resources in `ReSource`.
 
-Ứng dụng ưu tiên UI responsive: I/O, camera, serial, ghi media và phân tích ảnh chạy ngoài UI thread; các feature nặng được lazy import sau khi cửa sổ chính đã hiển thị.
+The application prioritizes responsive UI: I/O, camera, serial, media writing, and image analysis run outside the UI thread; heavy features are lazy-imported after the main window has been shown.
 
 ## Annotated Directory Structure
 
-- `Presentation/` — Views, ViewModels, worker và signal/slot điều phối UI.
-- `Models/` — project/session, camera, serial, media và thuật toán phân tích giọt.
-- `Infrastructure/` — SQLite repositories, đường dẫn dữ liệu, resource/window helper và crash handler.
-- `ReSource/` — QSS, SVG, ICO và splash screen.
+- `Presentation/` — Views, ViewModels, workers, and signal/slot UI orchestration.
+- `Models/` — projects/sessions, camera, serial, media, and droplet-analysis algorithms.
+- `Infrastructure/` — SQLite repositories, data paths, resource/window helpers, and crash handler.
+- `ReSource/` — QSS, SVG, ICO, and splash screen.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- `FunctionWorker`, các worker chuyên biệt và Qt queued signals đưa tác vụ blocking ra khỏi UI thread.
-- Camera, recorder, filesystem scanner và editor sử dụng cooperative shutdown; `finished` kết hợp `deleteLater()` để giải phóng đúng vòng đời.
-- SideBar dò nội dung `Image/Video` bằng hàng đợi scanner nền giới hạn đồng thời; branch indicator phản ánh nội dung thật mà không cần click để kích hoạt lazy load. Thanh shimmer 3px ở mép trên dùng gradient animation thích ứng chiều rộng dock, chỉ repaint khi restore/mở Project, scan media hoặc editor đang load và dừng hoàn toàn khi idle/hidden.
-- Video Editor dùng lazy playback: mở hoặc restore tab video chỉ lưu đường dẫn và dựng UI ở trạng thái Pause, chưa gọi `QMediaPlayer.setSource()` nên chưa cấp phát decoder. Source chỉ được nạp sau thao tác Play của người dùng.
-- MainView loại bỏ tab trùng theo normalized full path trước khi tạo media editor và điều phối single-active-video: khi một video được Play, các Video Editor khác pause rồi giải phóng source/decoder nhưng giữ vị trí resume. Cơ chế này chặn burst decoder khi restore hoặc double-click nhiều MP4 nặng.
-- SideBar hỗ trợ kéo-thả sắp xếp Project và Item: MIME nội bộ phân loại node, chỉ cho phép Project đổi vị trí ở root và Item đổi vị trí trong cùng Project; thứ tự path-stable được lưu trong session.
-- Droplet Auto Detect dùng baseline làm ràng buộc hình học: mask bỏ substrate/reflection, cắt contour tails có clearance thấp, kiểm tra hai baseline anchors làm contact hints và lấy mẫu liquid-cap arc đều theo arc length.
-- Droplet Measure Point hỗ trợ drag-select bằng selection rectangle: point được chọn được render màu đen, menu chuột phải chỉ hiện `Delete` khi có selection hợp lệ, và xóa theo index đã chọn trước khi dựng lại overlay.
-- `WindowOwnershipHelper` chuẩn hóa secondary-window policy: `MainView` là logical owner/điều phối viên nhưng cửa sổ phụ không dùng native transient parent, còn Win32 `WS_EX_APPWINDOW` giữ thumbnail riêng trong cùng nhóm taskbar. Runtime và shortcut installer dùng chung AppUserModelID `TNH.Optima`.
-- File Editor và Droplet Analysis là các top-level window độc lập được đăng ký với MainView; Analysis window có `WA_DeleteOnClose` để giải phóng instance đã đóng. ImageEditor truyền source path tách biệt với owner nên lưu kết quả phân tích vẫn đúng Item.
-- OpenCV, NumPy, Matplotlib và các editor nặng chỉ được import khi feature tương ứng được mở.
-- File text được ghi nguyên tử; SQLite dùng context manager; đường dẫn và tên tài nguyên được kiểm tra trước thao tác phá hủy.
-- Project mới chưa `Save As` dùng một đường dẫn mặc định xác định theo user Windows hiện tại: `PathHelper.user_documents_path()` gọi `SHGetKnownFolderPath(FOLDERID_Documents)`, sau đó nối `TNH Optima Projects/<ProjectName>`. Trên cấu hình Windows thông thường, kết quả là `C:\Users\<WindowsUser>\Documents\TNH Optima Projects\<ProjectName>`; nếu Windows, domain policy hoặc OneDrive đã chuyển Documents thì API trả về đúng vị trí Documents mà Explorer đang sử dụng. Khi Windows API không khả dụng, thuật toán lần lượt fallback về `%USERPROFILE%\Documents` rồi `Path.home()/Documents`. `ProjectManager` tạo thư mục gốc nếu chưa có, ghi `config.json` cho Project và giữ trạng thái `TEMP` cho đến khi `Save As`.
-- `CrashHandler` ghi rotating log, cài exception hook cho main/background thread và bật `faulthandler`.
+- `FunctionWorker`, specialized workers, and Qt queued signals move blocking tasks off the UI thread.
+- Camera, recorder, filesystem scanner, and editor components use cooperative shutdown; `finished` is paired with `deleteLater()` for correct lifecycle cleanup.
+- SideBar scans `Image/Video` content with a bounded background-scanner queue; branch indicators reflect real content without requiring a click to trigger lazy loading. The 3 px top shimmer uses a gradient animation adapted to dock width, repaints only while restoring/opening Projects, scanning media, or loading editors, and stops completely when idle/hidden.
+- Video Editor uses lazy playback: opening or restoring a video tab stores only the path and builds UI in Pause state; `QMediaPlayer.setSource()` is not called, so no decoder is allocated. The source loads only after the user presses Play.
+- MainView removes duplicate tabs by normalized full path before creating media editors and coordinates a single-active-video policy: when one video plays, other Video Editors pause and release their source/decoder while retaining resume position. This prevents decoder bursts during restore or rapid double-clicks on heavy MP4 files.
+- SideBar supports drag-and-drop ordering for Projects and Items: internal MIME identifies the node kind, Projects can move only at root level, Items can move only within the same Project, and path-stable order is saved in the session.
+- Droplet Auto Detect uses the baseline as a geometric constraint: it masks substrate/reflection, trims low-clearance contour tails, checks the two baseline anchors as contact hints, and samples the liquid-cap arc uniformly by arc length.
+- Droplet Measure Point supports drag-select with a selection rectangle: selected points render black, the right-click menu shows `Delete` only for a valid selection, and deletion uses selected indices before rebuilding the overlay.
+- `WindowOwnershipHelper` normalizes secondary-window policy: `MainView` is the logical owner/coordinator, secondary windows do not use a native transient parent, and Win32 `WS_EX_APPWINDOW` keeps separate thumbnails in the same taskbar group. Runtime and installer shortcuts share AppUserModelID `TNH.Optima`.
+- File Editor and Droplet Analysis are independent top-level windows registered with MainView; the Analysis window uses `WA_DeleteOnClose` to release closed instances. ImageEditor passes the source path separately from ownership so analysis results still save to the correct Item.
+- OpenCV, NumPy, Matplotlib, and heavy editors are imported only when their feature is opened.
+- Text files are written atomically; SQLite uses context managers; paths and resource names are validated before destructive operations.
+- New Projects that have not been `Save As` use a default path determined for the current Windows user: `PathHelper.user_documents_path()` calls `SHGetKnownFolderPath(FOLDERID_Documents)`, then appends `TNH Optima Projects/<ProjectName>`. On typical Windows configurations this resolves to `C:\Users\<WindowsUser>\Documents\TNH Optima Projects\<ProjectName>`; if Windows, domain policy, or OneDrive has moved Documents, the API returns the same Documents location Explorer uses. When the Windows API is unavailable, the algorithm falls back to `%USERPROFILE%\Documents` and then `Path.home()/Documents`. `ProjectManager` creates the root folder if needed, writes `config.json`, and keeps Project state as `TEMP` until `Save As`.
+- `CrashHandler` writes rotating logs, installs exception hooks for main/background threads, and enables `faulthandler`.
 
 ## Data Flow
 
-1. `main.py` cài crash handler, tạo Qt shell và lazy-load `MainViewModel`/`MainView`.
-2. View phát sự kiện → ViewModel kiểm tra đầu vào → Model hoặc worker thực hiện nghiệp vụ.
-3. Worker trả kết quả bằng signal về UI thread.
-4. Capture/record thành công phát `media_created` → SideBar cập nhật ngay; `QFileSystemWatcher` vẫn đồng bộ thay đổi từ bên ngoài.
-5. Media scan nền cập nhật cache và `ChildIndicatorPolicy`; khi người dùng mở node, danh sách cache được render ngay.
-6. Double-click/restore MP4 → tạo tab Pause không source → user Play → pause và release decoder của video khác → lazy `setSource()` cho video hiện tại → phát từ vị trí resume.
-7. Giữ chuột trái Project/Item → kéo tới vị trí hợp lệ → tree di chuyển nguyên node → khi đóng lưu `sidebar_order` → restore worker dựng lại đúng thứ tự.
-8. Trong Droplet Analysis, baseline coefficients/anchors + image đi qua worker → liquid-cap contour + contact endpoints → ellipse/circle fit → overlay và contact angles.
-9. Trong chế độ Measure Point, click vùng trống thêm point, drag vùng trống tạo selection rectangle, chuột phải selection → `Delete` → rebuild overlay từ danh sách point còn lại.
-10. Startup đặt process AppUserModelID → mở File Editor/Droplet Analysis → đăng ký với MainView → áp dụng taskbar style → Windows gom thumbnail dưới một biểu tượng TNH Optima.
-11. MainView chuyển sang minimized → chủ động minimize các secondary window đã đăng ký; restore MainView chỉ khôi phục MainView → chọn thumbnail cửa sổ phụ mới khôi phục/activate đúng window đó.
-12. Khi đóng, editor chờ worker hoàn tất theo tín hiệu, sau đó giải phóng camera, serial, multimedia, Matplotlib và lưu session.
-13. Create Project không có `specific_path` → lấy Documents qua Windows Known Folder API → fallback an toàn nếu cần → tạo `TNH Optima Projects/<ProjectName>/config.json` → đăng ký đường dẫn hiện tại với trạng thái `TEMP`; `Save As` mới sao chép Project tới vị trí do người dùng chọn và chuyển trạng thái thành `SAVED`.
+1. `main.py` installs the crash handler, creates the Qt shell, and lazy-loads `MainViewModel`/`MainView`.
+2. View emits an event -> ViewModel validates input -> Model or worker performs the domain operation.
+3. Worker returns results to the UI thread by signal.
+4. Successful capture/record emits `media_created` -> SideBar updates immediately; `QFileSystemWatcher` still synchronizes external changes.
+5. Background media scans update cache and `ChildIndicatorPolicy`; when the user expands a node, the cached list renders immediately.
+6. Double-click/restore MP4 -> create a Pause tab without source -> user presses Play -> pause and release other video decoders -> lazy `setSource()` for the current video -> resume playback from the stored position.
+7. Hold left mouse on Project/Item -> drag to a valid position -> tree moves the existing node -> on close save `sidebar_order` -> restore worker rebuilds the same order.
+8. In Droplet Analysis, baseline coefficients/anchors + image go through a worker -> liquid-cap contour + contact endpoints -> ellipse/circle fit -> overlay and contact angles.
+9. In Measure Point mode, click empty space to add a point, drag empty space to create a selection rectangle, right-click selection -> `Delete` -> rebuild the overlay from remaining points.
+10. Startup sets process AppUserModelID -> open File Editor/Droplet Analysis -> register with MainView -> apply taskbar style -> Windows groups thumbnails under one TNH Optima icon.
+11. MainView minimized -> actively minimizes registered secondary windows; restoring MainView restores only MainView -> selecting a secondary thumbnail restores/activates that specific window.
+12. On close, editors wait for worker completion by signal, then release camera, serial, multimedia, Matplotlib, and save session.
+13. Create Project without `specific_path` -> get Documents through the Windows Known Folder API -> safe fallback if needed -> create `TNH Optima Projects/<ProjectName>/config.json` -> register the current path as `TEMP`; `Save As` later copies the Project to the user-selected location and switches state to `SAVED`.

@@ -26,6 +26,8 @@ class ConfigHardwareDialog(QDialog):
             else ConfigHardwareViewModel(hardware_view_model)
         )
         self._close_when_idle = False
+        self._accept_when_idle = False
+        self._apply_in_progress = False
         self._port_before_scan = ""
 
         self.input_height = 28
@@ -150,6 +152,8 @@ class ConfigHardwareDialog(QDialog):
         self.btn_refresh.setEnabled(True)
 
     def _on_worker_error(self, message):
+        self._apply_in_progress = False
+        self._accept_when_idle = False
         self.btn_refresh.setEnabled(True)
         self.btn_apply.setEnabled(True)
         self.btn_cancel.setEnabled(True)
@@ -175,6 +179,7 @@ class ConfigHardwareDialog(QDialog):
         self.btn_apply.setEnabled(False)
         self.btn_cancel.setEnabled(False)
         self.btn_apply.setText("Connecting...")
+        self._apply_in_progress = True
         self.view_model.apply_connection(
             port,
             baud,
@@ -187,8 +192,10 @@ class ConfigHardwareDialog(QDialog):
         self.btn_cancel.setEnabled(True)
         success, message = result
         if success:
-            self.accept()
+            self._apply_in_progress = False
+            self._accept_when_idle = True
             return
+        self._apply_in_progress = False
         QMessageBox.critical(
             self,
             "Connection Failed",
@@ -201,6 +208,9 @@ class ConfigHardwareDialog(QDialog):
         self.reject()
 
     def closeEvent(self, event):
+        if self._apply_in_progress and self.view_model.is_busy():
+            event.ignore()
+            return
         if not self.view_model.request_close():
             self._close_when_idle = True
             event.ignore()
@@ -209,6 +219,10 @@ class ConfigHardwareDialog(QDialog):
 
     def _on_workers_idle(self):
         self.btn_refresh.setEnabled(True)
+        if self._accept_when_idle:
+            self._accept_when_idle = False
+            self.accept()
+            return
         if self._close_when_idle:
             self._close_when_idle = False
             self.close()

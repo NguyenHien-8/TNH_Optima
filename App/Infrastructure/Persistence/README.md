@@ -2,24 +2,31 @@
 
 ## Project Overview
 
-Thư mục tương thích cho database SQLite legacy. Database đang chạy không còn được ghi cạnh source hoặc executable; repository sử dụng Local App Data của người dùng.
+This directory keeps only the package marker and contains no runtime database.
+Databases in this directory are not migrated or packaged, which prevents test
+data from being included in the installer.
 
 ## Annotated Directory Structure
 
-- `ConfigStorage.db` — dữ liệu cấu hình legacy, chỉ dùng làm nguồn migration nếu tồn tại.
-- `SessionData.db` — dữ liệu session legacy, chỉ dùng làm nguồn migration nếu tồn tại.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- `StoragePath.persistent_database_path()` tạo thư mục dữ liệu per-user có quyền ghi.
-- Khi target chưa tồn tại, file legacy được copy một lần; lỗi copy không ngăn startup.
-- Schema và transaction vẫn do `ConfigRepository`/`SessionRepository` quản lý.
-- Không thêm database runtime mới vào source tree.
+- `StoragePath.persistent_database_path()` only computes the per-user path; it does not touch disk on the GUI thread.
+- Repositories create folders and schemas lazily on the first I/O operation.
+- Source and the PyInstaller executable use two different data namespaces.
+- `TNH_Optima.spec` and `installer.iss` exclude `ConfigStorage.db` and
+  `SessionData.db`, including SQLite sidecar files.
+- `installer.iss` removes the two Production databases from Local App Data on
+  uninstall; Development databases and logs are retained.
+- A clean install removes database state left by an old uninstaller, while an
+  in-place upgrade preserves the current session/config.
+- Schemas and transactions are still managed by `ConfigRepository`/`SessionRepository`.
+- Do not add new runtime databases to the source tree or installer.
 
 ## Data Flow
 
-1. Repository yêu cầu đường dẫn database runtime.
-2. `StoragePath` kiểm tra target trong Local App Data.
-3. Nếu cần, dữ liệu legacy tại đây được migrate.
-4. Mọi lần đọc/ghi sau đó diễn ra trên database per-user.
+1. A repository requests the runtime database path.
+2. `StoragePath` selects the Development area when running from source and the Production area when frozen.
+3. SQLite creates an empty schema when the database does not exist.
+4. Later reads/writes use the corresponding per-user database.

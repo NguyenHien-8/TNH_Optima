@@ -47,6 +47,8 @@ class FileEditorViewModel(QObject):
         self._hardware_command_queue = deque()
         self._hardware_command_worker = None
         self._closing = False
+        self._video_start_pending = False
+        self._video_start_worker = None
         self._video_stop_pending = False
         self._video_stop_worker = None
         self._close_ready_emitted = False
@@ -87,7 +89,11 @@ class FileEditorViewModel(QObject):
         if os.path.normpath(current_item_path) == os.path.normpath(item_path):
             return True
 
-        if self.media_manager.is_recording():
+        if (
+            self.media_manager.is_recording()
+            or self._video_start_pending
+            or self._video_stop_pending
+        ):
             self.error_occurred.emit("Cannot change save target while recording video.")
             return False
 
@@ -198,10 +204,30 @@ class FileEditorViewModel(QObject):
 
     # --- Video Recording ---
     def start_video(self):
+        if self._video_start_pending or self.media_manager.is_recording():
+            self.error_occurred.emit(
+                "Video recording is already starting or active."
+            )
+            return
         fps = self.camera_manager.get_fps()
         if fps <= 0:
             fps = 30.0
-        success, filename, message = self.media_manager.start_video(fps=fps)
+        self._video_start_pending = True
+        self._video_start_worker = self._run_action(
+            self.media_manager.prepare_video,
+            self._on_video_prepared,
+            fps,
+        )
+
+    def _on_video_prepared(self, preparation):
+        self._video_start_pending = False
+        if self._closing:
+            return
+        result = self.media_manager.start_prepared_video(preparation)
+        self._on_video_started(result)
+
+    def _on_video_started(self, result):
+        success, filename, message = result
         if success:
             self.elapsed_seconds = 0
             self.recording_time_updated.emit("00:00:00")
@@ -269,6 +295,15 @@ class FileEditorViewModel(QObject):
 
     def _finish_worker(self, worker):
         self._workers.discard(worker)
+        if worker is self._video_start_worker:
+            self._video_start_worker = None
+            self._video_start_pending = False
+            if (
+                self._closing
+                and self.media_manager.is_recording()
+                and not self._video_stop_pending
+            ):
+                self.stop_video()
         if worker is self._video_stop_worker:
             self._video_stop_worker = None
             self._video_stop_pending = False

@@ -2,26 +2,26 @@
 
 ## Project Overview
 
-ViewModels nhỏ cho camera, hardware, motor và quyết định Save/Delete, giữ dialogs không phụ thuộc trực tiếp vào implementation nghiệp vụ.
+Small ViewModels for camera, hardware, motor, and Save/Delete decisions, keeping dialogs independent from domain implementations.
 
 ## Annotated Directory Structure
 
 - `ConfigCameraViewModel.py` — scan/select/preview/apply/revert camera.
-- `ConfigHardwareViewModel.py` — scan port, đọc config, apply connection.
-- `MotorControlViewModel.py` — chuyển thao tác up/down/stop và phát state.
-- `DeleteResourcesViewModel.py` — dữ liệu dialog và cờ delete-on-disk.
+- `ConfigHardwareViewModel.py` — port scanning, config loading, and connection apply.
+- `MotorControlViewModel.py` — converts up/down/stop actions and emits state.
+- `DeleteResourcesViewModel.py` — dialog data and delete-on-disk flag.
 - `SaveResourcesViewModel.py` — state `SAVE`, `DONT_SAVE`, `CANCEL`.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Camera dialog áp dụng thay đổi transaction-like: giữ original ID, preview lựa chọn, apply để persist hoặc revert khi cancel.
-- Motor ViewModel phát trạng thái trước/sau lệnh đồng bộ.
-- Save/Delete ViewModels chỉ giữ state quyết định, không tự sửa filesystem.
+- Camera dialog applies changes transaction-like: keep original ID, preview the selection, persist on apply, or revert on cancel.
+- Motor ViewModel emits state before/after synchronous commands.
+- Save/Delete ViewModels only hold decision state and do not edit the filesystem directly.
 
 ## Data Flow
 
-1. Dialog cập nhật ViewModel.
-2. ViewModel gọi backend/manager hoặc lưu lựa chọn.
-3. Dialog accept/reject; MainView mới thực thi hành động phá hủy/lưu tương ứng.
+1. Dialog updates the ViewModel.
+2. ViewModel calls a backend/manager or stores the selected decision.
+3. Dialog accepts/rejects; MainView performs the corresponding destructive/save action.
 

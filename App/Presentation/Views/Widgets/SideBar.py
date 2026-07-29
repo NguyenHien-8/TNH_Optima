@@ -145,7 +145,7 @@ class SidebarShimmerBar(QWidget):
 
 
 class DropIndicatorProxyStyle(QProxyStyle):
-    """Custom style dùng để đổi màu và vẽ thanh drop indicator đúng vị trí."""
+    """Custom style that colors and positions the drop indicator."""
 
     def __init__(self, base_style=None, color="#0078D7", height=3):
         super().__init__(base_style)
@@ -166,8 +166,8 @@ class DropIndicatorProxyStyle(QProxyStyle):
             view = self._owner_view(widget)
             rect = getattr(view, "_custom_drop_indicator_rect", QRect())
 
-            # Không cho Qt vẽ indicator native tại row Image/Video/File nữa.
-            # Chỉ vẽ khi DraggableTreeWidget đã snap indicator về PROJECT hoặc ITEM hợp lệ.
+            # Do not let Qt draw the native indicator on Image/Video/File rows.
+            # Draw only after DraggableTreeWidget snaps it to a valid PROJECT or ITEM.
             if not rect.isValid():
                 return
 
@@ -183,7 +183,7 @@ class DropIndicatorProxyStyle(QProxyStyle):
 
 class DraggableTreeWidget(QTreeWidget):
     INTERNAL_NODE_MIME = "application/x-tnh-optima-sidebar-node"
-    DROP_INDICATOR_COLOR = "#0078D7"  # Xanh dương của thanh drop indicator
+    DROP_INDICATOR_COLOR = "#0078D7"  # Drop indicator blue
     DROP_INDICATOR_HEIGHT = 3
 
     def __init__(self, parent=None):
@@ -519,8 +519,8 @@ class DraggableTreeWidget(QTreeWidget):
             target_project = self._project_item_of(target)
             if target_project is None:
                 return None
-            # Dù con trỏ đang nằm trên Item/Image/Video/File, indicator vẫn được
-            # snap về row PROJECT, không gạch ngang node con.
+            # Even when the cursor is over an Item/Image/Video/File, snap the
+            # indicator back to the PROJECT row instead of crossing a child node.
             drop_position = self._drop_position_for_item_rect(target_project, pos)
 
         if not self._project_move_would_change(source, target_project, drop_position):
@@ -538,14 +538,15 @@ class DraggableTreeWidget(QTreeWidget):
 
         target_item = self._direct_item_of(target)
         if target_item is None:
-            # Khi rê trên row Project cha, chỉ cho hiển thị ở dưới Item cuối cùng.
+            # When hovering over the parent Project row, show only below the last Item.
             if project_item.childCount() == 0:
                 return None
             target_item = project_item.child(project_item.childCount() - 1)
             drop_position = QAbstractItemView.DropIndicatorPosition.BelowItem
         else:
-            # Nếu target là Image/Video/File thì snap indicator về Item cha.
-            # Vì con trỏ đang nằm trong vùng con của Item, vị trí hợp lý là dưới Item.
+            # If the target is Image/Video/File, snap the indicator to the parent Item.
+            # Because the cursor is inside the Item's child area, below the Item is the
+            # clearest position.
             if target is target_item:
                 drop_position = self._drop_position_for_item_rect(target_item, pos)
             else:
@@ -713,12 +714,12 @@ class DraggableTreeWidget(QTreeWidget):
 
             pm = icon.pixmap(12, 12)
             
-            # --- BẢN SỬA LỖI UI ---
-            # Lấy chiều rộng chuẩn của 1 cấp (level)
+            # --- UI FIX ---
+            # Get the standard width of one indentation level.
             indent = self.indentation() 
             
-            # Tính toán x dựa vào mép phải (right) của rect thay vì mép trái (x).
-            # Điều này ép mũi tên luôn nằm gọn trong ô cuối cùng, sát cạnh với Folder icon.
+            # Calculate x from rect.right() instead of rect.x(). This keeps the
+            # arrow inside the final cell, close to the folder icon.
             x = rect.right() - indent + (indent - pm.width()) // 2 + 6
             y = rect.y() + (rect.height() - pm.height()) // 2
             

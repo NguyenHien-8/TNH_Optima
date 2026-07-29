@@ -2,22 +2,22 @@
 
 ## Project Overview
 
-Bộ SVG dùng trong image/video/camera editors.
+SVG set used in image/video/camera editors.
 
 ## Annotated Directory Structure
 
-- Open/capture/analysis icons cho ảnh.
-- Play/pause/stop/skip icons cho video.
-- Photo/video camera icons cho live capture và recording.
+- Open/capture/analysis icons for images.
+- Play/pause/stop/skip icons for video.
+- Photo/video camera icons for live capture and recording.
 
 ## Core Algorithms & Implementation
 
-- SVG là dữ liệu vector tĩnh; Qt chịu trách nhiệm rasterize theo DPI/kích thước.
-- Asset được tra cứu bằng feature-relative path và có fallback khi thiếu.
+- SVG files are static vector data; Qt handles rasterization by DPI/size.
+- Assets are resolved through feature-relative paths and have fallbacks when missing.
 
 ## Data Flow
 
-1. Editor khởi tạo icon paths.
-2. QPushButton nhận QIcon.
-3. Signal click đi vào ViewModel/media pipeline.
+1. Editors initialize icon paths.
+2. QPushButton receives `QIcon`.
+3. Click signals enter the ViewModel/media pipeline.
 

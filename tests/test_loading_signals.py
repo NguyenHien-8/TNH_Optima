@@ -148,6 +148,19 @@ class LoadingSignalTests(unittest.TestCase):
             saved_image = QImage(str(output_path))
             self.assertEqual(saved_image.size(), image.size())
 
+    def test_analysis_components_load_without_blocking_image_editor(self):
+        view_model = ImageEditorViewModel()
+        ready = QSignalSpy(view_model.analysis_components_ready)
+
+        self.assertTrue(view_model.prepare_analysis_components())
+        self._wait_until(
+            lambda: len(ready) == 1
+            and not view_model.has_running_workers()
+        )
+
+        self.assertTrue(view_model._analysis_components_loaded)
+        self.assertIsNone(view_model._analysis_worker)
+
     def test_hidden_image_tab_defers_decode_until_shown(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir) / "deferred.png"

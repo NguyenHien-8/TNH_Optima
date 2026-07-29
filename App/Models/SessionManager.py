@@ -8,7 +8,8 @@ from App.Infrastructure.Repositories.SessionRepository import SessionRepository
 
 class SessionManager:
     """
-    Quản lý phiên làm việc: lưu và khôi phục danh sách project, editor, trạng thái expanded, và các item đang mở.
+    Manage session state: save and restore projects, editors, expanded paths,
+    and currently open items.
     """
 
     SESSION_KEY_OPEN_PROJECTS = "open_projects"

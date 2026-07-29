@@ -2,32 +2,34 @@
 
 ## Project Overview
 
-Tầng hạ tầng cung cấp persistence, định vị tài nguyên và xử lý lỗi dùng chung. Tầng này không chứa logic UI hoặc nghiệp vụ project.
+The infrastructure layer provides shared persistence, resource location, and error handling. It contains no UI logic or project-domain behavior.
 
 ## Annotated Directory Structure
 
-- `CrashHandler.py` — rotating log, Python/thread exception hook và native fault log.
-- `Helpers/ResourceHelper.py` — giải quyết đường dẫn icon, QSS và asset trong source/PyInstaller.
-- `Helpers/RecycleBinHelper.py` — chuyển file hoặc thư mục vào Windows Recycle Bin; nếu native recycle lỗi thì giữ nguyên nội dung, không fallback sang xóa vĩnh viễn.
-- `Helpers/MediaHelper.py` — nguồn định nghĩa dùng chung cho các phần mở rộng Image/Video được hỗ trợ.
-- `Helpers/WindowOwnershipHelper.py` — AppUserModelID, taskbar style và scale/center secondary window theo `availableGeometry()`.
-- `Repositories/` — Config/Session SQLite repositories và `StoragePath`.
-- `Persistence/` — vị trí database legacy dùng cho migration.
+- `CrashHandler.py` — rotating logs, Python/thread exception hooks, and native fault logging.
+- `Helpers/ResourceHelper.py` — resolves icon, QSS, and asset paths in source and PyInstaller builds.
+- `Helpers/RecycleBinHelper.py` — moves files or folders to the Windows Recycle Bin; if native recycling fails, the original content is kept and there is no permanent-delete fallback.
+- `Helpers/MediaHelper.py` — shared definitions for supported Image/Video extensions.
+- `Helpers/WindowOwnershipHelper.py` — AppUserModelID, taskbar style, and secondary-window scale/centering against `availableGeometry()`.
+- `Repositories/` — Config/Session SQLite repositories and `StoragePath`.
+- `Persistence/` — package marker; runtime databases are not stored or bundled here.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Log được ghi trong Local App Data và tự xoay vòng để giới hạn dung lượng.
-- Database runtime đặt ở thư mục người dùng có quyền ghi; dữ liệu legacy được copy một lần nếu cần.
-- SQLite connection luôn commit/rollback/close qua context manager.
-- Lỗi logging hoặc migration không được phép ngăn ứng dụng khởi động.
-- Window helper là no-op ngoài Windows; mọi lỗi Shell/User32 được log và fallback về hành vi Qt mặc định thay vì làm crash ứng dụng.
+- Logs are written under Local App Data and rotated to limit disk usage.
+- Runtime databases live in a writable per-user folder; source uses a
+  Development area separated from the PyInstaller executable's Production area.
+- Legacy databases in the source tree or bundle are not migrated into Production.
+- SQLite connections always commit/rollback/close through context managers.
+- Logging or migration errors must not prevent the application from starting.
+- The window helper is a no-op outside Windows; Shell/User32 errors are logged and fall back to default Qt behavior instead of crashing the application.
 
 ## Data Flow
 
-1. `main.py` cài `CrashHandler` trước khi import PyQt shell.
-2. Repository yêu cầu đường dẫn từ `StoragePath`, mở transaction ngắn và đóng connection ngay.
-3. ViewModel/Model đọc ghi cấu hình hoặc session qua repository.
-4. Exception chưa xử lý được ghi log và hiển thị thông báo an toàn trên main thread.
-5. Startup đặt taskbar identity trước UI đầu tiên; secondary window tạo native handle và taskbar style trước khi show.
-6. FileEditor/Droplet window được giới hạn theo vùng làm việc của màn hình hiện tại để không tràn màn hình.
+1. `main.py` installs `CrashHandler` before importing the PyQt shell.
+2. A repository requests its path from `StoragePath`, opens a short transaction, and closes the connection immediately.
+3. ViewModels/Models read or write configuration and session data through repositories.
+4. Unhandled exceptions are logged and displayed safely on the main thread.
+5. Startup sets the taskbar identity before the first UI; secondary windows create native handles and taskbar styles before showing.
+6. FileEditor/Droplet windows are bounded to the current screen work area so they do not overflow the display.

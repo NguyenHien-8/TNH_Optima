@@ -75,15 +75,17 @@ class MainViewModel(QObject):
         self.active_workers = []
         self._deferred_task_timers = set()
         self._session_restore_started = False
+        self._session_ui_operations = []
+        self._session_ui_index = 0
+        self._session_ui_result = None
+        self._session_ui_timer = None
+        self._saved_config_load_started = False
         self._deferred_hardware_config = None
         self._shutdown_started = False
         self._shutdown_complete = False
         self._shutdown_camera_done = False
         self._shutdown_io_done = False
         self._shutdown_worker = None
-
-        self.progress_update.emit("Loading configurations...")
-        self._load_saved_configurations()
 
         self.camera_dispatcher = CameraFrameDispatcher(self.camera_manager)
         self.camera_dispatcher.dispatch_error.connect(self.camera_error)
@@ -111,7 +113,7 @@ class MainViewModel(QObject):
             self._on_camera_shutdown_ready
         )
 
-        self.progress_update.emit("Configuration loaded.")
+        self.progress_update.emit("Components initialized.")
 
     def _add_opened_item(self, project_name, item_name):
         if project_name not in self.opened_items:
@@ -275,12 +277,13 @@ class MainViewModel(QObject):
 
     @pyqtSlot(object)
     def _apply_restored_session(self, result):
-        projects = result.get("projects", []) if isinstance(result, dict) else []
-        saved_opened_items = result.get("opened_items", {}) if isinstance(result, dict) else {}
+        if not isinstance(result, dict):
+            result = {}
+        projects = result.get("projects", [])
+        saved_opened_items = result.get("opened_items", {})
+        ui_operations = []
         self._set_hidden_media_paths(
             result.get("hidden_media_paths", [])
-            if isinstance(result, dict)
-            else []
         )
 
         for project in projects:
@@ -291,7 +294,7 @@ class MainViewModel(QObject):
 
             self.project_manager.current_projects[name] = path
             self.project_manager.project_states[name] = project.get("state", "SAVED")
-            self.project_added.emit(name, path)
+            ui_operations.append(("project", name, path))
 
             ordered_items = list(project.get("items", []))
             all_items = set(ordered_items)
@@ -304,9 +307,63 @@ class MainViewModel(QObject):
             for item_name in ordered_items:
                 if item_name not in visible_items:
                     continue
-                self.item_added.emit(name, item_name, os.path.join(path, item_name))
+                ui_operations.append(
+                    ("item", name, item_name, os.path.join(path, item_name))
+                )
                 self._add_opened_item(name, item_name)
 
+        self._session_ui_operations = ui_operations
+        self._session_ui_index = 0
+        self._session_ui_result = result
+        if ui_operations:
+            loading_token = "session-ui-restore"
+            self.sidebar_loading_changed.emit(loading_token, True)
+            timer = QTimer(self)
+            timer.setInterval(0)
+            timer.timeout.connect(self._process_session_ui_batch)
+            self._session_ui_timer = timer
+            self._deferred_task_timers.add(timer)
+            timer.start()
+            return
+        self._finish_restored_session_ui(result)
+
+    @pyqtSlot()
+    def _process_session_ui_batch(self):
+        if self._shutdown_started:
+            return
+        end = min(
+            self._session_ui_index + 20,
+            len(self._session_ui_operations),
+        )
+        for operation in self._session_ui_operations[
+            self._session_ui_index:end
+        ]:
+            if operation[0] == "project":
+                self.project_added.emit(operation[1], operation[2])
+            else:
+                self.item_added.emit(
+                    operation[1],
+                    operation[2],
+                    operation[3],
+                )
+        self._session_ui_index = end
+        if end < len(self._session_ui_operations):
+            return
+
+        timer = self._session_ui_timer
+        self._session_ui_timer = None
+        if timer is not None:
+            timer.stop()
+            self._deferred_task_timers.discard(timer)
+            timer.deleteLater()
+        result = self._session_ui_result or {}
+        self._session_ui_operations = []
+        self._session_ui_index = 0
+        self._session_ui_result = None
+        self.sidebar_loading_changed.emit("session-ui-restore", False)
+        self._finish_restored_session_ui(result)
+
+    def _finish_restored_session_ui(self, result):
         for editor_info in result.get("editors", []):
             if not isinstance(editor_info, dict):
                 continue
@@ -315,7 +372,6 @@ class MainViewModel(QObject):
             if (
                 isinstance(full_path, str)
                 and project_name in self.project_manager.current_projects
-                and os.path.isfile(full_path)
             ):
                 self.open_editor_requested.emit(full_path, project_name)
 
@@ -426,16 +482,19 @@ class MainViewModel(QObject):
         except Exception:
             log_exception("Could not load saved camera configuration")
             cam_index = None
-        if cam_index is not None:
-            self.camera_manager.active_camera_index = cam_index
-        else:
-            self.camera_manager.active_camera_index = None
-
         try:
             hw_config = self.config_repo.load_hardware_config()
         except Exception:
             log_exception("Could not load saved hardware configuration")
             hw_config = {"port": "", "baud": 115200, "period": 100}
+        return cam_index, hw_config
+
+    @pyqtSlot(object)
+    def _apply_saved_configurations(self, result):
+        if self._shutdown_started:
+            return
+        cam_index, hw_config = result
+        self.camera_manager.active_camera_index = cam_index
         port = hw_config.get("port", "")
         baud = hw_config.get("baud", 115200)
         period = hw_config.get("period", 100)
@@ -448,10 +507,24 @@ class MainViewModel(QObject):
 
         if port and port.strip():
             self._deferred_hardware_config = (port, baud)
+        if cam_index is not None and self.camera_manager._ref_count > 0:
+            self.camera_manager.ensure_connected(cam_index)
+        self.progress_update.emit("Configuration loaded.")
+        self._connect_deferred_hardware()
 
     @pyqtSlot()
     def start_deferred_initialization(self):
         """Start optional device I/O only after the main window can paint."""
+        if self._saved_config_load_started or self._shutdown_started:
+            return
+        self._saved_config_load_started = True
+        self.progress_update.emit("Loading configurations...")
+        worker = FunctionWorker(self._load_saved_configurations)
+        worker.result_ready.connect(self._apply_saved_configurations)
+        worker.error_occurred.connect(self.error_occurred)
+        self.start_worker(worker)
+
+    def _connect_deferred_hardware(self):
         if self._deferred_hardware_config is None:
             return
         port, baud = self._deferred_hardware_config
@@ -578,6 +651,7 @@ class MainViewModel(QObject):
         self._shutdown_worker = worker
         worker.result_ready.connect(self._on_shutdown_io_finished)
         worker.error_occurred.connect(self._on_shutdown_io_error)
+        worker.finished.connect(self._on_shutdown_worker_finished)
         worker.finished.connect(worker.deleteLater)
         worker.start()
         self._check_shutdown_complete()
@@ -591,13 +665,16 @@ class MainViewModel(QObject):
     @pyqtSlot(object)
     def _on_shutdown_io_finished(self, _saved):
         self._shutdown_io_done = True
-        self._shutdown_worker = None
         self._check_shutdown_complete()
 
     @pyqtSlot(str)
     def _on_shutdown_io_error(self, message):
         self.error_occurred.emit(message)
         self._shutdown_io_done = True
+        self._check_shutdown_complete()
+
+    @pyqtSlot()
+    def _on_shutdown_worker_finished(self):
         self._shutdown_worker = None
         self._check_shutdown_complete()
 
@@ -606,6 +683,7 @@ class MainViewModel(QObject):
             self._shutdown_started
             and self._shutdown_camera_done
             and self._shutdown_io_done
+            and self._shutdown_worker is None
             and not self._shutdown_complete
         ):
             self._shutdown_complete = True
@@ -1155,7 +1233,7 @@ class MainViewModel(QObject):
         self.status_message.emit(f"Loading file...")
 
     def handle_save_file_content(self, content: str, project_name: str, file_name: str, full_path: str):
-        if not full_path or not os.path.isdir(os.path.dirname(full_path)):
+        if not full_path:
             full_path = self.project_manager.get_file_path(project_name, file_name)
         if not full_path:
             self.error_occurred.emit("Could not determine the file save path.")

@@ -5,52 +5,57 @@
 ###########################################################
 import sqlite3
 import os
+import threading
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 from App.Infrastructure.Repositories.StoragePath import persistent_database_path
 
 class ConfigRepository:
     """
-    Repository quản lý việc đọc/ghi cấu hình ứng dụng vào database SQLite.
-    Sử dụng bảng 'app_config' với cấu trúc key-value.
+    Repository that reads and writes application configuration in SQLite.
+    Uses the 'app_config' table with a key-value structure.
     """
 
     def __init__(self, db_path: Optional[str] = None):
         """
-        Khởi tạo repository. Nếu không truyền db_path, tự động xác định đường dẫn
-        tới file ConfigStorage.db trong thư mục Persistence.
+        Initialize the repository. When db_path is omitted, use the isolated
+        data area for either source runtime or the packaged application.
         """
         if db_path is None:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
-            legacy_path = os.path.join(
-                project_root,
-                "App",
-                "Infrastructure",
-                "Persistence",
-                "ConfigStorage.db",
-            )
-            db_path = persistent_database_path(
-                "ConfigStorage.db", legacy_path=legacy_path
-            )
+            db_path = persistent_database_path("ConfigStorage.db")
         
         self.db_path = db_path
-        self._init_db()
+        self._init_lock = threading.Lock()
+        self._initialized = False
 
     def _init_db(self):
-        """Tạo bảng nếu chưa tồn tại."""
-        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS app_config (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
+        """Create the table if it does not already exist."""
+        if self._initialized:
+            return
+        with self._init_lock:
+            if self._initialized:
+                return
+            os.makedirs(
+                os.path.dirname(os.path.abspath(self.db_path)),
+                exist_ok=True,
+            )
+            connection = sqlite3.connect(self.db_path, timeout=5.0)
+            try:
+                connection.execute("""
+                    CREATE TABLE IF NOT EXISTS app_config (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                connection.commit()
+            finally:
+                connection.close()
+            self._initialized = True
 
     @contextmanager
     def _get_connection(self):
-        """Trả về kết nối database (dùng trong nội bộ)."""
+        """Return a database connection for internal use."""
+        self._init_db()
         connection = sqlite3.connect(self.db_path, timeout=5.0)
         try:
             yield connection
@@ -63,7 +68,7 @@ class ConfigRepository:
 
     # --- Generic methods ---
     def set_config(self, key: str, value: Any):
-        """Lưu một cặp key-value (value sẽ được chuyển thành string)."""
+        """Store one key-value pair, converting the value to a string."""
         if not isinstance(key, str) or not key:
             raise ValueError("Configuration key must be a non-empty string.")
         with self._get_connection() as conn:
@@ -73,7 +78,7 @@ class ConfigRepository:
             )
 
     def get_config(self, key: str) -> Optional[str]:
-        """Lấy giá trị của key (trả về None nếu không tồn tại)."""
+        """Return the key value, or None when the key does not exist."""
         if not isinstance(key, str) or not key:
             return None
         with self._get_connection() as conn:
@@ -83,7 +88,7 @@ class ConfigRepository:
         return row[0] if row else None
 
     def delete_config(self, key: str):
-        """Xóa một key khỏi database."""
+        """Delete a key from the database."""
         if not isinstance(key, str) or not key:
             return
         with self._get_connection() as conn:
@@ -91,14 +96,14 @@ class ConfigRepository:
 
     # --- Camera config ---
     def save_camera_index(self, index: Optional[int]):
-        """Lưu chỉ số camera đang dùng."""
+        """Save the active camera index."""
         if index is None:
             self.delete_config("camera_index")
         else:
             self.set_config("camera_index", index)
 
     def load_camera_index(self) -> Optional[int]:
-        """Đọc chỉ số camera, trả về None nếu chưa có."""
+        """Load the camera index, returning None when it has not been saved."""
         val = self.get_config("camera_index")
         if val is not None:
             try:
@@ -109,7 +114,7 @@ class ConfigRepository:
 
     # --- Hardware config ---
     def save_hardware_config(self, port: str, baud: int, period: int):
-        """Lưu cấu hình hardware."""
+        """Save the hardware configuration."""
         values = (
             ("hardware_port", str(port)),
             ("hardware_baud", str(baud)),
@@ -122,7 +127,7 @@ class ConfigRepository:
             )
 
     def load_hardware_config(self) -> Dict[str, Any]:
-        """Đọc cấu hình hardware, trả về dict với các key 'port', 'baud', 'period'."""
+        """Load hardware configuration with 'port', 'baud', and 'period' keys."""
         with self._get_connection() as conn:
             rows = conn.execute(
                 "SELECT key, value FROM app_config "
@@ -151,7 +156,7 @@ class ConfigRepository:
         }
 
     def clear_hardware_config(self):
-        """Xóa toàn bộ cấu hình hardware (khi disconnect)."""
+        """Clear all hardware configuration values on disconnect."""
         with self._get_connection() as conn:
             conn.execute(
                 "DELETE FROM app_config WHERE key IN "

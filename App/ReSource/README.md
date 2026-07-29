@@ -2,23 +2,23 @@
 
 ## Project Overview
 
-Tài nguyên giao diện được đóng gói cùng executable. Tên thư mục giữ nguyên casing hiện tại vì mọi đường dẫn trong mã tham chiếu `App/ReSource`.
+UI resources are bundled with the executable. The directory keeps its current casing because code paths reference `App/ReSource`.
 
 ## Annotated Directory Structure
 
-- `Styles/` — QSS theo widget/dialog.
-- `Icon/` — ICO, PNG và SVG theo feature.
+- `Styles/` — QSS by widget/dialog.
+- `Icon/` — ICO, PNG, and SVG by feature.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Không có thuật toán nghiệp vụ; QSS áp dụng qua `setStyleSheet`, icon qua `QIcon`.
-- `ResourceHelper.resource_path()` làm cho cùng đường dẫn hoạt động ở source và `_MEIPASS`.
-- `TNH_Optima.spec` bundle toàn bộ `App` nên tài nguyên có mặt trong bản build.
+- There are no domain algorithms here; QSS is applied through `setStyleSheet`, icons through `QIcon`.
+- `ResourceHelper.resource_path()` lets the same path work in source and `_MEIPASS`.
+- `TNH_Optima.spec` bundles the whole `App`, so resources are available in builds.
 
 ## Data Flow
 
-1. View yêu cầu resource tương đối.
-2. ResourceHelper trả path tuyệt đối.
-3. Qt tải style/icon/splash khi tạo widget.
+1. A View requests a relative resource.
+2. ResourceHelper returns an absolute path.
+3. Qt loads style/icon/splash when creating widgets.
 

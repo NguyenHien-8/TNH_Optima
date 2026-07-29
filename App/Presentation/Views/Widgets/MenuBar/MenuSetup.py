@@ -28,7 +28,7 @@ class MenuSetup(QMenu):
     def on_hardware(self):
         from App.Presentation.Views.Dialog.ConfigHardwareDialog import ConfigHardwareDialog
 
-        # Lấy hardware_manager từ view_model của MainView
+        # Get hardware_manager from MainView's view_model.
         view_model = (
             self.parent_window.view_model.create_hardware_config_view_model()
         )
@@ -38,7 +38,7 @@ class MenuSetup(QMenu):
     def on_camera(self):
         from App.Presentation.Views.Dialog.ConfigCameraDialog import ConfigCameraDialog
 
-        # Lấy camera_manager từ view_model của MainView
+        # Get camera_manager from MainView's view_model.
         view_model = (
             self.parent_window.view_model.create_camera_config_view_model()
         )

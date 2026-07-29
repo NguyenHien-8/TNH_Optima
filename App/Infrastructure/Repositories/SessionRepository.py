@@ -6,52 +6,57 @@
 import sqlite3
 import os
 import json
+import threading
 from contextlib import contextmanager
 from typing import Optional, Any
 from App.Infrastructure.Repositories.StoragePath import persistent_database_path
 
 class SessionRepository:
     """
-    Repository quản lý việc đọc/ghi dữ liệu phiên làm việc (session) vào database SQLite.
-    Sử dụng bảng 'session' với cấu trúc key-value.
+    Repository that reads and writes session data in SQLite.
+    Uses the 'session' table with a key-value structure.
     """
 
     def __init__(self, db_path: Optional[str] = None):
         """
-        Khởi tạo repository. Nếu không truyền db_path, tự động xác định đường dẫn
-        tới file SessionData.db trong thư mục Persistence.
+        Initialize the repository. When db_path is omitted, use the isolated
+        data area for either source runtime or the packaged application.
         """
         if db_path is None:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
-            legacy_path = os.path.join(
-                project_root,
-                "App",
-                "Infrastructure",
-                "Persistence",
-                "SessionData.db",
-            )
-            db_path = persistent_database_path(
-                "SessionData.db", legacy_path=legacy_path
-            )
+            db_path = persistent_database_path("SessionData.db")
 
         self.db_path = db_path
-        self._init_db()
+        self._init_lock = threading.Lock()
+        self._initialized = False
 
     def _init_db(self):
-        """Tạo bảng session nếu chưa tồn tại."""
-        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS session (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
+        """Create the session table if it does not already exist."""
+        if self._initialized:
+            return
+        with self._init_lock:
+            if self._initialized:
+                return
+            os.makedirs(
+                os.path.dirname(os.path.abspath(self.db_path)),
+                exist_ok=True,
+            )
+            connection = sqlite3.connect(self.db_path, timeout=5.0)
+            try:
+                connection.execute("""
+                    CREATE TABLE IF NOT EXISTS session (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                connection.commit()
+            finally:
+                connection.close()
+            self._initialized = True
 
     @contextmanager
     def _get_connection(self):
-        """Trả về kết nối database (dùng trong nội bộ)."""
+        """Return a database connection for internal use."""
+        self._init_db()
         connection = sqlite3.connect(self.db_path, timeout=5.0)
         try:
             yield connection
@@ -64,8 +69,8 @@ class SessionRepository:
 
     def save_session(self, key: str, value: Any):
         """
-        Lưu một cặp key-value vào bảng session.
-        value sẽ được chuyển thành chuỗi JSON.
+        Store one key-value pair in the session table.
+        The value is serialized to a JSON string.
         """
         if not isinstance(key, str) or not key:
             raise ValueError("Session key must be a non-empty string.")
@@ -78,8 +83,8 @@ class SessionRepository:
 
     def load_session(self, key: str) -> Optional[Any]:
         """
-        Đọc giá trị của key từ bảng session.
-        Trả về dữ liệu đã được giải mã JSON, hoặc None nếu không tồn tại.
+        Read a key value from the session table.
+        Return the decoded JSON data, or None when the key does not exist.
         """
         if not isinstance(key, str) or not key:
             return None

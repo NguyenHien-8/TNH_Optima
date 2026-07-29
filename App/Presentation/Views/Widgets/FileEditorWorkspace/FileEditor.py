@@ -4,7 +4,7 @@
 # Email: trannguyenhien29085@gmail.com
 ########################################################################
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QMessageBox, QSizePolicy
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, QElapsedTimer
 from PyQt6.QtGui import QImage, QPixmap
 
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
@@ -12,10 +12,15 @@ from App.Presentation.Views.Widgets.FileEditorWorkspace.MotorControlEditor impor
 from App.Presentation.Views.Widgets.FileEditorWorkspace.MediaControlEditor import MediaControlEditor
 
 class FileEditor(QWidget):
+    PREVIEW_UPDATE_INTERVAL_MS = 66
+
     def __init__(self, view_model, parent=None):
         super().__init__(parent)
         self.view_model = view_model
         self.current_frame = None
+        self._preview_update_clock = QElapsedTimer()
+        self._preview_update_clock.start()
+        self._last_preview_update_ms = -self.PREVIEW_UPDATE_INTERVAL_MS
 
         self.motor_editor = MotorControlEditor()
         self.media_editor = MediaControlEditor()
@@ -88,7 +93,18 @@ class FileEditor(QWidget):
     def on_frame_received(self, qimage):
         self.current_frame = qimage
         self.media_editor.update_frame(qimage)
-        self.update_camera_display(qimage)
+        if self._should_update_preview():
+            self.update_camera_display(qimage)
+
+    def _should_update_preview(self):
+        elapsed_ms = self._preview_update_clock.elapsed()
+        if (
+            elapsed_ms - self._last_preview_update_ms
+            < self.PREVIEW_UPDATE_INTERVAL_MS
+        ):
+            return False
+        self._last_preview_update_ms = elapsed_ms
+        return True
 
     @pyqtSlot(str)
     def on_video_state_changed(self, state):

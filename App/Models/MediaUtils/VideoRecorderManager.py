@@ -78,9 +78,11 @@ class VideoRecorderThread(QThread):
             self.mutex.unlock()
         self.requestInterruption()
 
-    def stop(self, timeout_ms=2000):
+    def stop(self, timeout_ms=None):
         """Stop synchronously; callers must invoke this outside the GUI thread."""
         self.request_stop()
+        if timeout_ms is None:
+            return self.wait()
         return self.wait(timeout_ms)
 
     def run(self):
@@ -169,24 +171,70 @@ class VideoRecorderManager:
         self._last_error = None
 
     def start_video(self, fps=20.0):
+        preparation = self.prepare_video(fps)
+        return self.start_prepared_video(preparation)
+
+    def prepare_video(self, fps=20.0):
+        """Validate storage and create the output folder away from the GUI."""
         if self.video_state != VideoState.IDLE:
-            return False, "", "Video is already recording or paused"
+            return (
+                False,
+                "",
+                "Video is already recording or paused",
+                None,
+                None,
+            )
 
         try:
+            fps = float(fps)
+            if fps <= 0:
+                raise ValueError("FPS must be positive")
             if not os.path.isdir(self.item_path):
-                return False, "", "Item path is invalid or does not exist"
+                return (
+                    False,
+                    "",
+                    "Item path is invalid or does not exist",
+                    None,
+                    None,
+                )
 
             success, message = FolderManager.ensure_folder_exists(
                 self.video_folder
             )
             if not success:
-                return False, "", message
+                return False, "", message, None, None
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"video_{timestamp}.mp4"
-            self.current_video_path = os.path.join(
+            output_path = os.path.join(
                 self.video_folder, filename
             )
+            return (
+                True,
+                filename,
+                f"Recording started: {filename}",
+                output_path,
+                fps,
+            )
+        except Exception as exc:
+            return (
+                False,
+                "",
+                f"Error preparing video recording: {exc}",
+                None,
+                None,
+            )
+
+    def start_prepared_video(self, preparation):
+        """Create the Qt recorder object after storage preparation completes."""
+        success, filename, message, output_path, fps = preparation
+        if not success:
+            return False, filename, message
+        if self.video_state != VideoState.IDLE:
+            return False, "", "Video is already recording or paused"
+
+        try:
+            self.current_video_path = output_path
             self._last_error = None
 
             # QApplication owns the wrapper until deleteLater() runs, even when
@@ -200,8 +248,9 @@ class VideoRecorderManager:
             self.video_thread = worker
             worker.start()
             self.video_state = VideoState.RECORDING
-            return True, filename, f"Recording started: {filename}"
+            return True, filename, message
         except Exception as exc:
+            self.video_thread = None
             self.video_state = VideoState.IDLE
             return False, "", f"Error starting video recording: {exc}"
 
@@ -228,12 +277,7 @@ class VideoRecorderManager:
             return False, "", "No video is currently recording"
 
         try:
-            if not worker.stop():
-                return (
-                    False,
-                    "",
-                    "Video recorder did not stop within 2 seconds",
-                )
+            worker.stop()
             worker.deleteLater()
             self.video_thread = None
             self.video_state = VideoState.IDLE

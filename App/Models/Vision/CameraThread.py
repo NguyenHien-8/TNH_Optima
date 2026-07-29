@@ -21,20 +21,52 @@ class CameraThread(QThread):
         self.mutex = QMutex()
         self.wait_condition = QWaitCondition()
         self.fps = 30.0 
+        self._latest_frame = None
+        self._frame_signal_pending = False
 
     def stop_camera(self):
         self.mutex.lock()
-        self._is_running = False
-        self.wait_condition.wakeAll()
-        self.mutex.unlock()
+        try:
+            self._is_running = False
+            self.wait_condition.wakeAll()
+        finally:
+            self.mutex.unlock()
         self.requestInterruption()
 
     def set_paused(self, state: bool):
         self.mutex.lock()
-        self._is_paused = state
-        if not state:
-            self.wait_condition.wakeAll()
-        self.mutex.unlock()
+        try:
+            self._is_paused = state
+            if not state:
+                self.wait_condition.wakeAll()
+        finally:
+            self.mutex.unlock()
+
+    def take_latest_frame(self):
+        """Return the newest frame and allow at most one more queued signal."""
+        self.mutex.lock()
+        try:
+            image = self._latest_frame
+            self._latest_frame = None
+            self._frame_signal_pending = False
+            return image
+        finally:
+            self.mutex.unlock()
+
+    def _publish_frame(self, image):
+        """Coalesce frames so Qt's GUI event queue cannot grow unbounded."""
+        self.mutex.lock()
+        try:
+            self._latest_frame = image
+            should_emit = not self._frame_signal_pending
+            if should_emit:
+                self._frame_signal_pending = True
+        finally:
+            self.mutex.unlock()
+        if should_emit:
+            # The receiver takes _latest_frame rather than relying on this
+            # argument, which may already have been superseded.
+            self.change_pixmap_signal.emit(image)
 
     def run(self):
         cap = None
@@ -92,7 +124,7 @@ class CameraThread(QThread):
                     bytes_per_line,
                     QImage.Format.Format_RGB888,
                 ).copy()
-                self.change_pixmap_signal.emit(image)
+                self._publish_frame(image)
         except Exception as exc:
             if not self.isInterruptionRequested():
                 self.error_signal.emit(

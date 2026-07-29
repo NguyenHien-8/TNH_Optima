@@ -4,6 +4,31 @@ from pathlib import Path
 
 block_cipher = None
 project_dir = Path(SPECPATH).resolve()
+excluded_database_names = {
+    'configstorage.db',
+    'sessiondata.db',
+}
+
+
+def is_runtime_database_path(path):
+    """Return True for a runtime DB or one of its SQLite sidecar files."""
+    file_name = Path(path).name.casefold()
+    return any(
+        file_name == database_name
+        or file_name.startswith(f'{database_name}-')
+        or file_name.startswith(f'{database_name}.')
+        for database_name in excluded_database_names
+    )
+
+
+def without_runtime_databases(entries):
+    """Prevent runtime/test databases from entering the frozen application."""
+    return [
+        entry
+        for entry in entries
+        if not is_runtime_database_path(entry[0])
+        and not is_runtime_database_path(entry[1])
+    ]
 
 # PyInstaller's standard hooks collect the native libraries and Qt plugins for
 # the modules imported by the application. Do not collect the whole PyQt6
@@ -39,6 +64,10 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+# Hooks added by future dependencies must not be able to collect development
+# or user databases implicitly.
+a.datas = without_runtime_databases(a.datas)
 
 pyz = PYZ(a.pure)
 

@@ -174,8 +174,6 @@ def project_media_item_path(
         return None
 
     item_path = os.path.dirname(media_path)
-    if not os.path.isdir(item_path):
-        return None
 
     if project_root is not None:
         normalized_project = canonical_path(project_root)

@@ -10,7 +10,7 @@ QLabel {
     font-family: Arial, sans-serif;
 }
 
-/* --- STYLE CHO COMBOBOX --- */
+/* --- COMBOBOX STYLE --- */
 QComboBox { 
     background-color: #FFFFFF; 
     border: 1px solid #7A7A7A; 

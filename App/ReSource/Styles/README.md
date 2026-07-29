@@ -2,21 +2,21 @@
 
 ## Project Overview
 
-Các stylesheet QSS tách presentation styling khỏi logic Python.
+QSS stylesheets separate presentation styling from Python logic.
 
 ## Annotated Directory Structure
 
-- `MainViewStyles.qss`, `MenuBarStyles.qss`, `EditorWorkspaceStyles.qss` — shell chính.
-- `FileEditorStyles.qss`, `ImageEditorStyles.qss`, `VideoEditorStyles.qss`, `DropletAnalysisStyles.qss` — editors và cửa sổ phân tích.
+- `MainViewStyles.qss`, `MenuBarStyles.qss`, `EditorWorkspaceStyles.qss` — main shell.
+- `FileEditorStyles.qss`, `ImageEditorStyles.qss`, `VideoEditorStyles.qss`, `DropletAnalysisStyles.qss` — editors and analysis window.
 - `CameraDialogStyles.qss`, `HardwareDialogStyles.qss`, `MotorControlDialog.qss`, `DelSaveDialogStyles.qss` — dialogs.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Qt selector dựa trên widget class, objectName và dynamic property.
-- Mỗi View gọi `apply_stylesheet()` để nạp UTF-8 qua resource path; nếu thiếu chỉ cảnh báo và dùng style mặc định.
+- Qt selectors rely on widget class, objectName, and dynamic properties.
+- Each View calls `apply_stylesheet()` to load UTF-8 through the resource path; missing files only warn and use default styling.
 
 ## Data Flow
 
-1. Widget khởi tạo → resolve QSS path → đọc chuỗi → `setStyleSheet()`.
-2. Dynamic property (ví dụ preview state) được repolish để đổi giao diện.
+1. Widget initializes -> resolves QSS path -> reads text -> `setStyleSheet()`.
+2. Dynamic properties, such as preview state, are repolished to update the UI.

@@ -223,7 +223,17 @@ class CameraManager(QObject):
         self._emit_shutdown_ready_if_idle()
 
     @pyqtSlot(QImage)
-    def _on_frame_routed(self, image):
+    def _on_frame_routed(self, _queued_image):
+        worker = self.sender()
+        if (
+            self._shutting_down
+            or worker is not self.current_thread
+            or not callable(getattr(worker, "take_latest_frame", None))
+        ):
+            return
+        image = worker.take_latest_frame()
+        if image is None or image.isNull():
+            return
         if self.retry_count > 0:
             self.retry_count = 0
         if self._preview_mode:

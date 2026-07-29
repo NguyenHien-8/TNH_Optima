@@ -3,6 +3,8 @@
 # Author: TRAN NGUYEN HIEN
 # Email: trannguyenhien29085@gmail.com
 #############################################################################
+import importlib
+
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QImage, QImageReader
 from App.Presentation.ViewModels.Workers import FunctionWorker
@@ -12,6 +14,7 @@ class ImageEditorViewModel(QObject):
     error_occurred = pyqtSignal(str)
     workers_idle = pyqtSignal()
     loading_changed = pyqtSignal(str, bool)
+    analysis_components_ready = pyqtSignal()
 
     def __init__(self, project_name=None, item_name=None):
         super().__init__()
@@ -21,6 +24,8 @@ class ImageEditorViewModel(QObject):
         self._workers = set()
         self._load_workers = set()
         self._load_generation = 0
+        self._analysis_components_loaded = False
+        self._analysis_worker = None
 
     def load_image(self, file_path):
         if not isinstance(file_path, str) or not file_path:
@@ -70,6 +75,55 @@ class ImageEditorViewModel(QObject):
         else:
             self.error_occurred.emit("No image loaded to save.")
 
+    def prepare_analysis_components(self):
+        """Load optional scientific/plotting modules without freezing Qt."""
+        if self._analysis_components_loaded:
+            self.analysis_components_ready.emit()
+            return True
+        if (
+            self._analysis_worker is not None
+            and self._analysis_worker.isRunning()
+        ):
+            return False
+
+        worker = FunctionWorker(self._load_analysis_components)
+        self._analysis_worker = worker
+        self._workers.add(worker)
+        loading_token = f"analysis-import:{id(worker)}"
+        self.loading_changed.emit(loading_token, True)
+        worker.result_ready.connect(self._on_analysis_components_loaded)
+        worker.error_occurred.connect(self.error_occurred)
+        worker.finished.connect(
+            lambda token=loading_token: self.loading_changed.emit(
+                token,
+                False,
+            )
+        )
+        worker.finished.connect(lambda: self._finish_worker(worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        return True
+
+    @staticmethod
+    def _load_analysis_components():
+        # Importing scipy, OpenCV and Matplotlib can take seconds on the first
+        # use. No QWidget is created here; this only warms Python modules.
+        module_names = (
+            "App.Models.Analysis.DropletAnalysis",
+            "App.Presentation.ViewModels.FeatureViewModel."
+            "DropletAnalysisViewModel",
+            "matplotlib.backends.backend_qt5agg",
+            "matplotlib.figure",
+            "matplotlib.patches",
+        )
+        for module_name in module_names:
+            importlib.import_module(module_name)
+        return True
+
+    def _on_analysis_components_loaded(self, _loaded):
+        self._analysis_components_loaded = True
+        self.analysis_components_ready.emit()
+
     def _start_worker(
         self,
         function,
@@ -99,6 +153,8 @@ class ImageEditorViewModel(QObject):
     def _finish_worker(self, worker):
         self._workers.discard(worker)
         self._load_workers.discard(worker)
+        if worker is self._analysis_worker:
+            self._analysis_worker = None
         if not any(item.isRunning() for item in self._workers):
             self.workers_idle.emit()
 

@@ -20,6 +20,7 @@ from App.Infrastructure.Helpers.WindowOwnershipHelper import (
     configure_secondary_window,
     fit_window_to_available_screen,
 )
+from App.Infrastructure.CrashHandler import log_exception
 from App.Presentation.ViewModels.MainViewModel import MainViewModel
 from App.Presentation.Views.MenuBar import MenuBar
 from App.Presentation.Views.Widgets.SideBar import ProjectSidebar
@@ -117,9 +118,12 @@ class FileEditorWindow(QMainWindow):
                 self.main_view._close_after_file_editor = False
                 QTimer.singleShot(0, self.main_view.close)
         except Exception as e:
+            log_exception("Could not close FileEditor safely")
             QMessageBox.warning(self, "Close Error", str(e))
-            self.main_view.file_editor_window = None
-            event.accept()
+            # Keep the window and its ViewModel alive. Accepting here can
+            # destroy a QThread owner while a recorder or file task is still
+            # running, which terminates the process in Qt.
+            event.ignore()
 
     @pyqtSlot()
     def _on_close_ready(self):
@@ -163,6 +167,7 @@ class MainView(QMainWindow):
         self._pending_text_loads = {}
         self._pending_tab_closes = set()
         self._close_after_tabs = False
+        self._tab_close_cancelled = False
 
         self.setup_ui()
         self.editor_workspace.tab_widget.currentChanged.connect(self.on_tab_changed)
@@ -888,6 +893,7 @@ class MainView(QMainWindow):
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
             )
             if reply == QMessageBox.StandardButton.Cancel:
+                self._tab_close_cancelled = True
                 return False
             if reply == QMessageBox.StandardButton.Save:
                 content = widget.toPlainText()
@@ -927,29 +933,13 @@ class MainView(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def _close_all_tabs_safely(self) -> bool:
+        self._tab_close_cancelled = False
         for i in range(self.editor_workspace.tab_widget.count() - 1, -1, -1):
             if not self._close_tab_safely(i):
                 return False
         return True
 
     def closeEvent(self, event: QCloseEvent):
-        if not self.view_model.shutdown_workers():
-            self._close_after_background_workers = True
-            self.system_status_bar.showMessage(
-                "A background file operation is still running. Please wait before closing.",
-                5000,
-            )
-            event.ignore()
-            return
-        if not self.sidebar.shutdown():
-            self._close_after_sidebar = True
-            self.system_status_bar.showMessage(
-                "Media folders are still being scanned. Closing automatically when ready.",
-                3000,
-            )
-            event.ignore()
-            return
-
         editor_list = []
         tab_widget = self.editor_workspace.tab_widget
         for i in range(tab_widget.count()):
@@ -973,10 +963,16 @@ class MainView(QMainWindow):
                 return
 
         if not self._close_all_tabs_safely():
-            self._close_after_tabs = True
-            self.system_status_bar.showMessage(
-                "Finishing editor operations before closing.", 5000
-            )
+            self._close_after_tabs = not self._tab_close_cancelled
+            if self._tab_close_cancelled:
+                self.system_status_bar.showMessage(
+                    "Application close canceled.",
+                    3000,
+                )
+            else:
+                self.system_status_bar.showMessage(
+                    "Finishing editor operations before closing.", 5000
+                )
             event.ignore()
             return
         if not self.view_model.shutdown_workers():
@@ -984,6 +980,14 @@ class MainView(QMainWindow):
             self.system_status_bar.showMessage(
                 "Finishing file saves before closing.",
                 5000,
+            )
+            event.ignore()
+            return
+        if not self.sidebar.shutdown():
+            self._close_after_sidebar = True
+            self.system_status_bar.showMessage(
+                "Media folders are still being scanned. Closing automatically when ready.",
+                3000,
             )
             event.ignore()
             return
@@ -1087,7 +1091,7 @@ class MainView(QMainWindow):
     def _update_camera_status(self, message):
         import re
 
-        # Khi đang kết nối camera theo index, nếu đã có cache tên thì hiển thị tên thật ngay
+        # While connecting by camera index, show the cached real name immediately when available.
         if "Connecting Camera" in message:
             match = re.search(r'Camera\s+(\d+)', message)
             if match:
@@ -1098,7 +1102,7 @@ class MainView(QMainWindow):
                 self.status_bar.set_camera_connected(True, "Camera")
             return
 
-        # Camera acquired mà camera đã active + đã có cache tên
+        # Camera acquired while an active camera and cached name are available.
         if "Camera acquired" in message:
             camera_status = self.view_model.get_camera_status()
             active_idx = camera_status["index"]
@@ -1136,7 +1140,7 @@ class MainView(QMainWindow):
                 name = cam.get('name', f"Camera {idx}")
                 self.camera_info[idx] = name
 
-        # Nếu camera đang active thì refresh lại StatusBar bằng tên thật ngay khi scan xong
+        # If the camera is active, refresh the StatusBar with the real name after scanning.
         camera_status = self.view_model.get_camera_status()
         if camera_status["index"] is not None and camera_status["running"]:
             self.status_bar.set_camera_connected(

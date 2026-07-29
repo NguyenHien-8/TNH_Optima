@@ -2,24 +2,24 @@
 
 ## Project Overview
 
-Tầng controller sở hữu kết nối serial duy nhất và cung cấp API phần cứng thread-safe cho phần còn lại của ứng dụng.
+The controller layer owns the single serial connection and exposes a thread-safe hardware API to the rest of the application.
 
 ## Annotated Directory Structure
 
-- `HardwareConnector.py` — singleton serial, scan port, connect/disconnect và write.
-- `HardwareManager.py` — facade QObject, cấu hình hiện tại và signal trạng thái.
+- `HardwareConnector.py` — serial singleton, port scanning, connect/disconnect, and writes.
+- `HardwareManager.py` — QObject facade, current configuration, and status signals.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Singleton được bảo vệ bằng lock; serial handle được thay thế/đóng theo ownership rõ ràng.
-- Mỗi yêu cầu connect có generation token: disconnect hoặc connect mới sẽ hủy kết quả connect cũ.
-- Retry chỉ áp dụng cho lỗi truy cập port và chạy trong worker, không giữ lock trong lúc sleep/open port.
-- Read/write timeout hữu hạn; port, baud và payload được kiểm tra chủ động.
+- The singleton is protected by a lock; the serial handle is replaced/closed with clear ownership.
+- Each connect request has a generation token: disconnect or a new connect cancels stale connect results.
+- Retry applies only to port access errors and runs in a worker without holding the lock during sleep/open.
+- Read/write timeouts are finite; port, baud, and payload are validated proactively.
 
 ## Data Flow
 
-1. Dialog/MainViewModel gửi connect hoặc scan vào `FunctionWorker`.
-2. `HardwareManager` gọi `HardwareConnector`.
-3. Connector trả `(success, message)` và Manager phát `connection_status_changed`.
-4. Motor command đi từ ViewModel → `ControlPanelManager` → `HardwareManager` → serial.
+1. Dialog/MainViewModel sends connect or scan work into `FunctionWorker`.
+2. `HardwareManager` calls `HardwareConnector`.
+3. The connector returns `(success, message)` and the manager emits `connection_status_changed`.
+4. Motor commands flow from ViewModel -> `ControlPanelManager` -> `HardwareManager` -> serial.

@@ -2,27 +2,27 @@
 
 ## Project Overview
 
-Quản lý camera vật lý, scan thiết bị và định tuyến frame đến feature đang hoạt động.
+Manages physical cameras, device scanning, and frame routing to the active feature.
 
 ## Annotated Directory Structure
 
-- `CameraManager.py` — state machine camera, reference count, retry timer và lifecycle.
-- `CameraThread.py` — mở/capture/release OpenCV camera ngoài UI thread.
-- `HardwareCameraScan.py` — scan tên/index camera trong worker.
-- `CameraFrameDispatcher.py` — chuyển frame đến ViewModel hợp lệ.
+- `CameraManager.py` — camera state machine, reference count, retry timer, and lifecycle.
+- `CameraThread.py` — opens/captures/releases OpenCV cameras outside the UI thread.
+- `HardwareCameraScan.py` — scans camera names/indices in a worker.
+- `CameraFrameDispatcher.py` — routes frames to a valid ViewModel.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Camera không scan hoặc kết nối trong constructor; I/O chỉ bắt đầu sau first paint hoặc khi feature acquire.
-- Chuyển camera dùng pending target và tín hiệu `finished`, không gọi wait trên luồng UI.
-- Retry dùng single-shot `QTimer` có thể hủy.
-- Thread kiểm tra interruption, giải phóng `VideoCapture` trong `finally` và chỉ import OpenCV trong `run()`.
-- Dispatcher kiểm tra callable `receive_frame`; target lỗi sẽ bị vô hiệu hóa an toàn.
+- Cameras are not scanned or connected in constructors; I/O starts only after first paint or when a feature acquires the camera.
+- Camera switching uses a pending target and the `finished` signal; it does not call wait on the UI thread.
+- Retry uses a cancellable single-shot `QTimer`.
+- Threads check interruption, release `VideoCapture` in `finally`, and import OpenCV only in `run()`.
+- The dispatcher checks for callable `receive_frame`; failing targets are disabled safely.
 
 ## Data Flow
 
-1. Config/feature yêu cầu scan, preview hoặc acquire camera.
-2. `CameraManager` tạo worker và nhận `QImage` qua queued signal.
-3. `CameraFrameDispatcher` chuyển frame đến `FileEditorViewModel`.
-4. ViewModel phát preview, capture frame hoặc đưa frame vào video recorder.
+1. Config/features request camera scan, preview, or acquisition.
+2. `CameraManager` creates workers and receives `QImage` frames through queued signals.
+3. `CameraFrameDispatcher` routes frames to `FileEditorViewModel`.
+4. The ViewModel emits preview frames, captures stills, or sends frames to the video recorder.

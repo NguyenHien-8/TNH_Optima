@@ -41,7 +41,8 @@ A valid Item is a direct child of its Project and must contain both `Image/` and
 
 They remain internally marked `TEMP` until **Save As** copies them to a user-selected directory and marks them `SAVED`.
 
-Application state is not written into the source tree. Configuration and session databases live under:
+Application state is not written into the source tree. The installed
+PyInstaller application stores configuration and session databases under:
 
 ```text
 %LOCALAPPDATA%/TNH Optima/Data/
@@ -50,6 +51,17 @@ Application state is not written into the source tree. Configuration and session
 ```
 
 Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
+
+Running from source uses the isolated
+`%LOCALAPPDATA%/TNH Optima Development/Data/` directory. Development databases
+are never migrated into or bundled with the installed application.
+
+The installer excludes both runtime databases and their SQLite sidecar files.
+Uninstalling removes the production `ConfigStorage.db` and `SessionData.db`
+files from `%LOCALAPPDATA%/TNH Optima/Data/`, so a later reinstall starts with
+an empty configuration and session. Development databases and application logs
+are not removed. A clean install also removes database state left behind by a
+legacy uninstaller; an in-place upgrade preserves the current user state.
 
 ## Annotated Directory Structure
 
@@ -91,9 +103,9 @@ Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
     │   │   ├── SessionRepository.py
     │   │   │   └── JSON-encoded SQLite session records.
     │   │   └── StoragePath.py
-    │   │       └── Per-user database paths and one-time legacy database migration.
+    │   │       └── Isolated Development/Production per-user database paths.
     │   └── Persistence/
-    │       └── Compatibility location for legacy databases; runtime databases are per-user.
+    │       └── Package marker only; runtime databases are never bundled.
     ├── Models/
     │   ├── ProjectManager.py
     │   │   └── Thread-safe Project/Item/media filesystem operations and TEMP/SAVED state.
@@ -377,7 +389,8 @@ File Editor and Motor dialog commands run in serialized background queues. Stop 
 - UTF-8 text loads are capped at `20 MB`, rendered into the editor in `64 KiB` chunks, and saved atomically through a same-directory temporary file plus `os.replace`.
 - `SidebarViewModel` owns a media-scan queue limited to two workers, coalesces repeated watcher refreshes, and returns names to the View. `ProjectSidebar` caches each directory and renders at most 200 tree nodes per event-loop turn. `QFileSystemWatcher` handles external changes; explicit `media_created` signals make in-app captures visible immediately.
 - Sidebar drag/drop reorders Projects at the root or Items within the same Project. It changes display/session order only; it does not move directories on disk.
-- Session restore validates existing paths, reconstructs Projects/Items in saved order, then reopens valid editor tabs one event-loop turn at a time so tab construction cannot monopolize the GUI thread.
+- Startup reads SQLite configuration in a worker; repository constructors do not create folders or schemas on the GUI thread.
+- Session restore validates existing paths, reconstructs Projects/Items in bounded event-loop batches, then reopens valid editor tabs one event-loop turn at a time so tree/tab construction cannot monopolize the GUI thread.
 - Close operations are cooperative and non-blocking: Views never call `QThread.wait()` on the GUI thread. Editors defer destruction while ViewModel workers or recording finalization remain active. Final camera shutdown, serial disconnect, and session persistence complete asynchronously, then a queued signal retries the close automatically.
 - `FileEditorWindow` and `DropletAnalysisWindow` are sized once against the active screen's `availableGeometry()`, capped at `94% × 90%`, centered, and given a screen-safe minimum. This keeps them inside the work area on small displays and multi-monitor setups.
 

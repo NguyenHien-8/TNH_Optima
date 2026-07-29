@@ -129,6 +129,10 @@ class ImageEditor(QWidget):
 
     def connect_view_model_signals(self):
         self.view_model.image_loaded.connect(self.on_image_loaded)
+        self.view_model.error_occurred.connect(self.on_error)
+        self.view_model.analysis_components_ready.connect(
+            self._open_droplet_analysis
+        )
 
     def connect_ui_signals(self):
         self.btn_open.clicked.connect(self.on_open_clicked)
@@ -205,6 +209,17 @@ class ImageEditor(QWidget):
             )
             return
 
+        self.btn_calibration.setEnabled(False)
+        self.btn_calibration.setToolTip("Loading analysis components...")
+        self.view_model.prepare_analysis_components()
+
+    @pyqtSlot()
+    def _open_droplet_analysis(self):
+        self.btn_calibration.setEnabled(True)
+        self.btn_calibration.setToolTip("Open Droplet Analysis")
+        if self.current_pixmap is None or self.current_pixmap.isNull():
+            return
+
         try:
             from App.Presentation.Views.Widgets.DropletAnalysisWindow import DropletAnalysisWindow
             from App.Presentation.ViewModels.FeatureViewModel.DropletAnalysisViewModel import DropletAnalysisViewModel
@@ -238,6 +253,12 @@ class ImageEditor(QWidget):
                 "Error",
                 f"Cannot open Droplet Analysis Window:\n{str(e)}"
             )
+
+    @pyqtSlot(str)
+    def on_error(self, message):
+        self.btn_calibration.setEnabled(True)
+        self.btn_calibration.setToolTip("Open Droplet Analysis")
+        QMessageBox.warning(self, "Image Error", message)
 
     def _on_droplet_window_closed(self, window):
         if window in self.droplet_windows:

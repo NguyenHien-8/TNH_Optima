@@ -32,15 +32,23 @@ class CameraConfigBackend:
         self.camera_manager.set_preview_mode(False)
         self.camera_manager.stop_current_camera()
 
-    def apply_changes(self, connect_now=False):
+    def save_selected_camera(self, selected_camera_id):
+        self.config_repo.save_camera_index(selected_camera_id)
+        return selected_camera_id
+
+    def apply_runtime_changes(self, connect_now=False):
         self.camera_manager.set_preview_mode(False) 
         self.camera_manager.active_camera_index = self.selected_camera_id
-        self.config_repo.save_camera_index(self.selected_camera_id)
 
         if self.selected_camera_id is not None and (connect_now or self.camera_manager._ref_count > 0):
             self.camera_manager.change_camera(self.selected_camera_id)
         else:
             self.camera_manager.stop_current_camera()
+
+    def apply_changes(self, connect_now=False):
+        """Compatibility API for non-UI callers."""
+        self.save_selected_camera(self.selected_camera_id)
+        self.apply_runtime_changes(connect_now)
 
     def revert_changes(self):
         self.camera_manager.set_preview_mode(False)

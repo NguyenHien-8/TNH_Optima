@@ -2,46 +2,46 @@
 
 ## Project Overview
 
-Các widget tái sử dụng cho cây project, tab editor, trạng thái và phân tích giọt.
+Reusable widgets for the project tree, editor tabs, status display, and droplet analysis.
 
 ## Annotated Directory Structure
 
-- `SideBar.py` — cây Project/Item/Image/Video, reorder drag-drop, explicit media update và filesystem watcher.
-- `EditorWorkspace.py` — tab container, drag/drop và close contract.
-- `DropletAnalysisWindow.py` — tương tác điểm, drag-select Measure Point, fit, overlay và export.
-- `StatusBar.py` — trạng thái camera/serial.
-- `FileEditorWorkspace/` — camera, image/video editor và control widgets.
-- `MenuBar/` — menu actions, shortcuts và sidebar toggle.
+- `SideBar.py` — Project/Item/Image/Video tree, drag-drop reordering, explicit media updates, and filesystem watcher.
+- `EditorWorkspace.py` — tab container, drag/drop, and close contract.
+- `DropletAnalysisWindow.py` — point interaction, drag-select Measure Point, fitting, overlay, and export.
+- `StatusBar.py` — camera/serial status.
+- `FileEditorWorkspace/` — camera, image/video editors, and control widgets.
+- `MenuBar/` — menu actions, shortcuts, and sidebar toggle.
 
 ## Core Algorithms & Implementation
 
-- SideBar lazy-scan media bằng worker và chèn kết quả theo batch 200 item.
-- Tối đa hai media scanner chạy đồng thời; các yêu cầu còn lại nằm trong queue để project lớn không tạo quá nhiều `QThread`.
-- Node `Image/Video` được dò nền ngay khi Item xuất hiện: có media thì policy là `ShowIndicator`, rỗng thì `DontShowIndicatorWhenChildless`.
-- Custom branch renderer xét cả child đã load và `ChildIndicatorPolicy`, nên mũi tên xuất hiện trước lần click đầu tiên.
-- `notify_media_created` validate full path, chống duplicate, chèn theo thứ tự và tự mở đúng Project/Item/Image|Video node.
-- Nếu watcher phát thay đổi khi scanner đang chạy, refresh được đưa vào pending set và chạy lại sau `finished`.
-- Watcher vẫn xử lý file tạo/xóa từ ứng dụng ngoài.
-- Drag-and-drop nội bộ dùng MIME `application/x-tnh-optima-sidebar-node`; Project chỉ reorder ở top-level, Item chỉ reorder trong cùng Project. Drop sang Project khác hoặc lên Image/Video/file sai cấp bị từ chối để không vô tình thay đổi filesystem.
-- Reorder dùng `takeTopLevelItem`/`takeChild` rồi chèn lại chính object cũ, nhờ đó selection, expanded state, media cache và watcher không phải dựng lại.
-- Widget có worker phát `close_ready` để tránh xóa QThread còn chạy.
-- Droplet Auto Detect yêu cầu người dùng xác định baseline trước khi chạy. Worker truyền bản sao bất biến của coefficients và hai baseline anchors vào model để cô lập substrate/reflection, xác định footprint và chỉ lấy cung biên giọt phía trên baseline.
-- Baseline anchors chỉ neo hai contact endpoint khi nằm đủ gần biên tự động; model tự fallback sang contact extrapolation nếu hint không phù hợp.
-- Điểm biên trả về đã loại substrate tails và được lấy mẫu đều theo arc length; UI chỉ cập nhật overlay sau khi worker hoàn tất và báo chủ động nếu chưa có baseline hoặc không tìm thấy biên hợp lệ.
-- Measure Point selection phân biệt click và drag bằng ngưỡng pixel nhỏ: click vùng trống thêm point, drag vùng trống vẽ rectangle, các point nằm trong rectangle được render màu đen và lưu bằng `selected_measurement_indices`.
-- Context menu chuột phải trong Measure Point chỉ mở khi có selection hợp lệ; action `Delete` xóa đúng các index được chọn, clear rectangle/selection và render lại danh sách point còn lại. Nút `Delete Measure Point` vẫn xóa tất cả khi không có selection.
-- `DropletAnalysisWindow` là top-level window độc lập: MainView chỉ là logical owner dùng để điều phối minimize, còn Win32 taskbar style cho phép Windows tạo thumbnail riêng trong cùng nhóm TNH Optima thay vì caption thu nhỏ trên desktop.
-- `WA_DeleteOnClose` bảo đảm analysis object ẩn không bị giữ lại; source image path được truyền riêng nên việc đổi QObject owner không ảnh hưởng vị trí lưu kết quả.
+- SideBar lazy-scans media in workers and inserts results in batches of 200 items.
+- At most two media scanners run concurrently; remaining requests stay queued so large projects do not create too many `QThread` instances.
+- `Image/Video` nodes are scanned in the background as soon as an Item appears: nodes with media use `ShowIndicator`, empty nodes use `DontShowIndicatorWhenChildless`.
+- The custom branch renderer considers both loaded children and `ChildIndicatorPolicy`, so arrows appear before the first click.
+- `notify_media_created` validates the full path, prevents duplicates, inserts in order, and expands the correct Project/Item/Image|Video node.
+- If the watcher reports changes while a scanner is running, the refresh is added to a pending set and rerun after `finished`.
+- The watcher still handles file creation/deletion from external applications.
+- Internal drag-and-drop uses MIME `application/x-tnh-optima-sidebar-node`; Projects reorder only at top level, Items reorder only within the same Project. Drops into another Project or onto wrong-level Image/Video/file nodes are rejected to avoid accidental filesystem changes.
+- Reorder uses `takeTopLevelItem`/`takeChild` and reinserts the same object, so selection, expanded state, media cache, and watcher do not need to be rebuilt.
+- Widgets with workers emit `close_ready` to avoid deleting a running QThread.
+- Droplet Auto Detect requires the user to define a baseline before running. The worker passes immutable copies of coefficients and two baseline anchors into the model to isolate substrate/reflection, determine the footprint, and keep only the droplet-edge arc above the baseline.
+- Baseline anchors pin the two contact endpoints only when close enough to the automatic edge; the model falls back to contact extrapolation when hints are unsuitable.
+- Returned edge points have substrate tails removed and are sampled uniformly by arc length; the UI updates the overlay only after the worker completes and reports proactively when no baseline exists or no valid edge is found.
+- Measure Point selection separates click and drag with a small pixel threshold: clicking empty space adds a point, dragging empty space draws a rectangle, and points inside the rectangle render black and are stored in `selected_measurement_indices`.
+- The right-click context menu in Measure Point opens only with a valid selection; `Delete` removes the selected indices, clears rectangle/selection, and rerenders remaining points. The `Delete Measure Point` button still deletes all points when there is no selection.
+- `DropletAnalysisWindow` is an independent top-level window: MainView is only the logical owner used for minimize coordination, while Win32 taskbar style lets Windows create a separate thumbnail in the same TNH Optima group instead of a minimized desktop caption.
+- `WA_DeleteOnClose` ensures hidden analysis objects are not retained; the source image path is passed separately, so changing QObject ownership does not affect where results are saved.
 
 ## Data Flow
 
-1. Project signals tạo Item → enqueue scan nền cho `Image` và `Video`.
-2. Scan result → cache tên file + cập nhật branch indicator, vẫn chưa tạo child khi node đang đóng.
-3. Click mở node → render ngay từ cache; danh sách lớn được chèn theo batch.
-4. Capture/record thành công → explicit `media_created` → cập nhật SideBar ngay.
-5. Filesystem change bên ngoài → watcher → background rescan → indicator/tree update.
-6. Drag Project/Item → validate node kind + parent boundary → tính index trước/sau → di chuyển nguyên tree item.
-7. Double click/drag-drop file → MainView mở editor tương ứng.
-8. Droplet baseline coefficients + anchors → Auto Detect worker → liquid-cap contour + validated contacts → edge points hợp lệ → UI thread vẽ overlay.
-9. Measure Point drag-select → selected indices → chuột phải `Delete` → xóa selected points → redraw measurement overlay.
-10. ImageEditor mở Droplet Analysis → truyền source path + MainView logical owner → helper đăng ký window/taskbar style → grouped preview; close phát `destroyed` để gỡ khỏi danh sách cửa sổ.
+1. Project signals create Item -> enqueue background scans for `Image` and `Video`.
+2. Scan result -> cache filenames + update branch indicator, without creating children while the node is closed.
+3. Click to expand node -> render from cache immediately; large lists are inserted in batches.
+4. Successful capture/record -> explicit `media_created` -> update SideBar immediately.
+5. External filesystem change -> watcher -> background rescan -> indicator/tree update.
+6. Drag Project/Item -> validate node kind + parent boundary -> compute before/after index -> move the existing tree item.
+7. Double click/drag-drop file -> MainView opens the matching editor.
+8. Droplet baseline coefficients + anchors -> Auto Detect worker -> liquid-cap contour + validated contacts -> valid edge points -> UI thread draws overlay.
+9. Measure Point drag-select -> selected indices -> right-click `Delete` -> remove selected points -> redraw measurement overlay.
+10. ImageEditor opens Droplet Analysis -> passes source path + MainView logical owner -> helper registers window/taskbar style -> grouped preview; close emits `destroyed` to remove it from the window list.

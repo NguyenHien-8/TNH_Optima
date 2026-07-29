@@ -2,28 +2,28 @@
 
 ## Project Overview
 
-Các menu/action của cửa sổ chính, gồm shortcut, icon và lời gọi API công khai của MainView.
+Main-window menus/actions, including shortcuts, icons, and calls into MainView's public API.
 
 ## Annotated Directory Structure
 
-- `MenuFile.py` — Project/Item lifecycle, restart và exit.
+- `MenuFile.py` — Project/Item lifecycle, restart, and exit.
 - `MenuSetup.py` — camera/hardware configuration.
-- `MenuControl.py` — motor dialog và FileEditor control.
+- `MenuControl.py` — motor dialog and FileEditor control.
 - `KeyboardShortcut.py` — shortcut constants.
 - `ToggleSideBar.py` — sidebar action/icon.
-- `MenuCalibration.py`, `MenuTool.py`, `MenuWindow.py`, `MenuHelp.py` — các menu mở rộng.
+- `MenuCalibration.py`, `MenuTool.py`, `MenuWindow.py`, `MenuHelp.py` — extension menus.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Action helper chuẩn hóa `QAction`, icon và `QKeySequence`.
-- Config/Motor/FileEditor modules nặng được import trong action handler, không nằm trên startup path.
-- Menu chỉ gọi MainView hoặc mở dialog; nghiệp vụ và I/O vẫn đi qua ViewModel/worker.
-- Restart dùng Qt process API sau khi yêu cầu application quit.
+- Action helpers normalize `QAction`, icons, and `QKeySequence`.
+- Heavy Config/Motor/FileEditor modules are imported in action handlers, not on the startup path.
+- Menus only call MainView or open dialogs; domain work and I/O still go through ViewModels/workers.
+- Restart uses Qt process APIs after requesting application quit.
 
 ## Data Flow
 
-1. User chọn menu hoặc shortcut.
-2. Action gọi method của MainView.
-3. MainView lazy-load dialog/feature nếu cần.
-4. Dialog/ViewModel thực hiện nghiệp vụ và trả kết quả bằng signal.
+1. User selects a menu item or shortcut.
+2. The action calls a MainView method.
+3. MainView lazy-loads a dialog/feature if needed.
+4. Dialog/ViewModel performs the domain operation and returns results by signal.

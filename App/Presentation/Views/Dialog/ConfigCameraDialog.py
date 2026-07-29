@@ -6,13 +6,15 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QComboBox, QPushButton, QMessageBox, QFrame,
                              QSizePolicy, QStyle, QSpacerItem)
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, QElapsedTimer
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPainterPath
 
 from App.Presentation.ViewModels.DialogViewModel.ConfigCameraViewModel import ConfigCameraViewModel
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
 
 class ConfigCameraDialog(QDialog):
+    PREVIEW_UPDATE_INTERVAL_MS = 66
+
     def __init__(self, camera_view_model, parent=None, has_open_editors=False):
         super().__init__(parent)
         self.setWindowTitle("Camera Configuration")
@@ -24,6 +26,12 @@ class ConfigCameraDialog(QDialog):
             if isinstance(camera_view_model, ConfigCameraViewModel)
             else ConfigCameraViewModel(camera_view_model)
         )
+        self._preview_update_clock = QElapsedTimer()
+        self._preview_update_clock.start()
+        self._last_preview_update_ms = -self.PREVIEW_UPDATE_INTERVAL_MS
+        self._close_when_idle = False
+        self._accept_when_idle = False
+        self._apply_in_progress = False
         self._connect_view_model_signals()
 
         self.load_camera_dialog_style()
@@ -36,6 +44,9 @@ class ConfigCameraDialog(QDialog):
     def _connect_view_model_signals(self):
         self.view_model.camera_list_updated.connect(self.update_camera_list)
         self.view_model.preview_frame_received.connect(self.update_preview)
+        self.view_model.apply_completed.connect(self._on_apply_completed)
+        self.view_model.error_occurred.connect(self._on_apply_error)
+        self.view_model.workers_idle.connect(self._on_workers_idle)
 
     def setup_ui(self):
         main_layout = QVBoxLayout()
@@ -129,7 +140,7 @@ class ConfigCameraDialog(QDialog):
         main_layout.addLayout(action_layout)
 
     def set_preview_state(self, state: str):
-        """Thay đổi trạng thái hiển thị của Preview Label bằng Property động"""
+        """Update the Preview Label visual state through a dynamic property."""
         self.lbl_preview.setProperty("state", state)
         self.lbl_preview.style().unpolish(self.lbl_preview)
         self.lbl_preview.style().polish(self.lbl_preview)
@@ -199,6 +210,13 @@ class ConfigCameraDialog(QDialog):
     def update_preview(self, qt_img):
         if qt_img.isNull():
             return
+        elapsed_ms = self._preview_update_clock.elapsed()
+        if (
+            elapsed_ms - self._last_preview_update_ms
+            < self.PREVIEW_UPDATE_INTERVAL_MS
+        ):
+            return
+        self._last_preview_update_ms = elapsed_ms
 
         target_size = self.lbl_preview.size()
         
@@ -229,12 +247,64 @@ class ConfigCameraDialog(QDialog):
         self.lbl_preview.setPixmap(rounded)
 
     def on_click_apply(self):
-        self.view_model.apply_changes(connect_now=self.has_open_editors)
-        self.accept()
+        self._set_apply_busy(True)
+        self._apply_in_progress = True
+        if not self.view_model.apply_changes(
+            connect_now=self.has_open_editors
+        ):
+            self._apply_in_progress = False
+            self._set_apply_busy(False)
+
+    def _set_apply_busy(self, busy):
+        self.combo_cameras.setEnabled(not busy)
+        self.btn_refresh.setEnabled(not busy)
+        self.btn_connect.setEnabled(not busy)
+        self.btn_disconnect.setEnabled(not busy)
+        self.btn_apply.setEnabled(not busy)
+        self.btn_cancel.setEnabled(not busy)
+        self.btn_apply.setText("Saving..." if busy else "Apply and Close")
+
+    @pyqtSlot()
+    def _on_apply_completed(self):
+        self._apply_in_progress = False
+        self._set_apply_busy(False)
+        self._accept_when_idle = True
+
+    @pyqtSlot(str)
+    def _on_apply_error(self, message):
+        self._apply_in_progress = False
+        self._accept_when_idle = False
+        self._set_apply_busy(False)
+        QMessageBox.critical(
+            self,
+            "Camera Configuration Error",
+            message.splitlines()[0],
+        )
 
     def on_click_cancel(self):
+        if self.view_model.is_busy():
+            return
         self.view_model.revert_changes()
         self.reject()
 
     def closeEvent(self, event):
-        self.on_click_cancel()
+        if self._apply_in_progress and self.view_model.is_busy():
+            event.ignore()
+            return
+        if not self.view_model.request_close():
+            self._close_when_idle = True
+            event.ignore()
+            return
+        self.view_model.revert_changes()
+        super().closeEvent(event)
+
+    @pyqtSlot()
+    def _on_workers_idle(self):
+        if self._accept_when_idle:
+            self._accept_when_idle = False
+            self.accept()
+            return
+        if self._close_when_idle:
+            self._close_when_idle = False
+            self.view_model.revert_changes()
+            self.reject()

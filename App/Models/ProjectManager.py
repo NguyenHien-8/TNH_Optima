@@ -46,7 +46,6 @@ class ProjectManager:
             user_documents_path() / "TNH Optima Projects"
         )
         self.temp_root = str(default_projects_path)
-        os.makedirs(self.temp_root, exist_ok=True)
 
     def _get_project_root(self, project_name):
         return self.current_projects.get(project_name)

@@ -2,25 +2,27 @@
 
 ## Project Overview
 
-Các repository cô lập SQLite khỏi ViewModel và cung cấp persistence key-value cho cấu hình ứng dụng cùng phiên làm việc.
+Repositories isolate SQLite from ViewModels and provide key-value persistence for application configuration and session state.
 
 ## Annotated Directory Structure
 
-- `ConfigRepository.py` — camera index và hardware configuration.
-- `SessionRepository.py` — project, opened item/editor và expanded path dưới dạng JSON.
-- `StoragePath.py` — đường dẫn database per-user và migration database legacy.
+- `ConfigRepository.py` — camera index and hardware configuration.
+- `SessionRepository.py` — projects, opened items/editors, and expanded paths as JSON.
+- `StoragePath.py` — per-user database paths, separated into Development and Production.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Mỗi thao tác dùng connection riêng với timeout hữu hạn.
-- Context manager bảo đảm commit khi thành công, rollback khi lỗi và luôn đóng handle.
-- Key rỗng bị từ chối; JSON được encode Unicode; giá trị số cấu hình có fallback an toàn.
-- `save_hardware_config` ghi các trường liên quan trong một transaction.
+- Each operation uses its own connection with a finite timeout.
+- Folders and schemas are created lazily on the first read/write, so constructors do not block UI startup.
+- Context managers guarantee commit on success, rollback on error, and handle closure.
+- Empty keys are rejected; JSON is Unicode-encoded; numeric configuration values have safe fallbacks.
+- `save_hardware_config` writes related fields in a single transaction.
 
 ## Data Flow
 
-1. Repository xác định database trong Local App Data.
-2. Nếu database mới chưa tồn tại, `StoragePath` thử migrate bản legacy.
-3. ViewModel/SessionManager gọi API repository.
-4. SQLite trả dữ liệu thuần; parsing và fallback diễn ra trước khi dữ liệu đi vào manager.
+1. When running from source, repositories use `%LOCALAPPDATA%/TNH Optima Development/Data`.
+2. When running the PyInstaller executable, repositories use `%LOCALAPPDATA%/TNH Optima/Data`.
+3. Legacy databases in the source tree or bundle are not copied into Production.
+4. ViewModel/SessionManager calls repository APIs.
+5. SQLite returns plain data; parsing and fallback happen before data enters managers.

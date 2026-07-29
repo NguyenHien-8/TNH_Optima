@@ -2,28 +2,28 @@
 
 ## Project Overview
 
-Các QDialog cấu hình camera/hardware, điều khiển motor và xác nhận save/delete.
+QDialogs for camera/hardware configuration, motor control, and save/delete confirmation.
 
 ## Annotated Directory Structure
 
-- `ConfigCameraDialog.py` — camera list, preview và apply/revert.
-- `ConfigHardwareDialog.py` — port scan, baud/query period và connect.
+- `ConfigCameraDialog.py` — camera list, preview, and apply/revert.
+- `ConfigHardwareDialog.py` — port scanning, baud/query period, and connect.
 - `MotorControlDialog.py` — up/down/stop command queue.
-- `DeleteResourcesDialog.py` — lựa chọn remove workspace hoặc delete disk.
+- `DeleteResourcesDialog.py` — choose workspace removal or disk deletion.
 - `SaveResourcesDialog.py` — Save/Don't Save/Cancel.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- Hardware port scan và connect chạy trong `FunctionWorker`; nút được khóa trong lúc thao tác.
-- Motor commands chạy tuần tự trong worker; Stop được đưa lên đầu queue.
-- Dialog từ chối đóng khi worker liên quan chưa hoàn tất để tránh QThread bị hủy sớm.
-- Camera preview dùng lifecycle bất đồng bộ của `CameraManager`.
-- Dialog xác nhận chỉ trả decision, không tự thực hiện thao tác phá hủy.
+- Hardware port scan and connect run in `FunctionWorker`; buttons are disabled during the operation.
+- Motor commands run sequentially in a worker; Stop is moved to the front of the queue.
+- Dialogs reject close while related workers are still active to avoid premature QThread destruction.
+- Camera preview uses the asynchronous lifecycle of `CameraManager`.
+- Confirmation dialogs return only a decision and do not perform destructive work themselves.
 
 ## Data Flow
 
-1. Menu/MainView lazy-import và mở dialog với manager phù hợp.
-2. Dialog validate input rồi giao tác vụ blocking cho worker.
-3. Worker result cập nhật UI trên main thread.
-4. Accept/reject trả quyền điều phối về MainView/ViewModel.
+1. Menu/MainView lazy-imports and opens the dialog with the appropriate manager.
+2. The dialog validates input and hands blocking work to a worker.
+3. Worker results update UI on the main thread.
+4. Accept/reject returns coordination to MainView/ViewModel.

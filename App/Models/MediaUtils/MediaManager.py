@@ -26,6 +26,12 @@ class MediaManager:
         """Start recording video with the given FPS."""
         return self.video_manager.start_video(fps)
 
+    def prepare_video(self, fps=20.0):
+        return self.video_manager.prepare_video(fps)
+
+    def start_prepared_video(self, preparation):
+        return self.video_manager.start_prepared_video(preparation)
+
     def pause_video(self):
         """Pause video recording."""
         return self.video_manager.pause_video()

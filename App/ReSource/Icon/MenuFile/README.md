@@ -2,21 +2,21 @@
 
 ## Project Overview
 
-SVG cho các thao tác lifecycle Project/Item và ứng dụng.
+SVG files for Project/Item and application lifecycle actions.
 
 ## Annotated Directory Structure
 
 - New/open/save/delete/rename-related assets.
-- `restart.svg` và `exit.svg` cho lifecycle process.
+- `restart.svg` and `exit.svg` for process lifecycle.
 
 ## Core Algorithms & Implementation
 
-- SVG là dữ liệu vector tĩnh; Qt chịu trách nhiệm rasterize theo DPI/kích thước.
-- Asset được tra cứu bằng feature-relative path và có fallback khi thiếu.
+- SVG files are static vector data; Qt handles rasterization by DPI/size.
+- Assets are resolved through feature-relative paths and have fallbacks when missing.
 
 ## Data Flow
 
-1. MenuFile tạo QAction.
-2. Action hiển thị icon và shortcut.
-3. MainView/ViewModel thực thi nghiệp vụ.
+1. MenuFile creates `QAction`.
+2. Action displays icon and shortcut.
+3. MainView/ViewModel performs the domain operation.
 

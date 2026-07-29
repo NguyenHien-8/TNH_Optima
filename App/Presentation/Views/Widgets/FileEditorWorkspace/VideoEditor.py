@@ -8,8 +8,16 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QFileDialog, QSlider, QLabel, QSizePolicy, QMessageBox,
                              QComboBox)
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QUrl, QSize, QTimer
-# Đã thêm QPainter, QFont, QColor, QPen vào imports
+from PyQt6.QtCore import (
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
+    QElapsedTimer,
+    QUrl,
+    QSize,
+    QTimer,
+)
+# QPainter, QFont, QColor, and QPen are used for timestamp overlays.
 from PyQt6.QtGui import QIcon, QCloseEvent, QPixmap, QImage, QPainter, QFont, QColor, QPen
 from PyQt6.QtMultimedia import QMediaPlayer, QVideoFrame
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -22,6 +30,8 @@ from App.Presentation.ViewModels.FeatureViewModel.VideoEditorViewModel import (
 
 
 class VideoEditor(QWidget):
+    FRAME_PROBE_INTERVAL_MS = 250
+
     sig_open_video = pyqtSignal(str, str)  # project_name, file_path
     media_created = pyqtSignal(str, str, str, str)
     close_ready = pyqtSignal()
@@ -62,6 +72,9 @@ class VideoEditor(QWidget):
         self._loaded_file_path = None
         self._resume_position = 0
         self._play_when_ready = False
+        self._frame_probe_clock = QElapsedTimer()
+        self._frame_probe_clock.start()
+        self._last_frame_probe_ms = -self.FRAME_PROBE_INTERVAL_MS
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("VideoEditor")
@@ -257,10 +270,19 @@ class VideoEditor(QWidget):
     @pyqtSlot(QVideoFrame)
     def on_video_frame_probed(self, frame):
         """Store the current frame as a QImage."""
-        if frame.isValid():
-            image = frame.toImage()
-            if not image.isNull():
-                self.current_frame = image
+        if not frame.isValid():
+            return
+        elapsed_ms = self._frame_probe_clock.elapsed()
+        if (
+            self.current_frame is not None
+            and elapsed_ms - self._last_frame_probe_ms
+            < self.FRAME_PROBE_INTERVAL_MS
+        ):
+            return
+        image = frame.toImage()
+        if not image.isNull():
+            self.current_frame = image
+            self._last_frame_probe_ms = elapsed_ms
 
     def load_video(self, file_path):
         """Prepare a video tab without allocating a decoder or auto-playing."""
@@ -407,7 +429,7 @@ class VideoEditor(QWidget):
 
         # --- BEGIN MODIFICATION: DRAW TIMESTAMP ON IMAGE ---
         
-        # 1. Tính toán thời gian (Time Calculation)
+        # 1. Calculate the timestamp text.
         current_ms = (
             self._media_player.position()
             if self._media_player is not None
@@ -415,8 +437,8 @@ class VideoEditor(QWidget):
         )
         total_seconds = current_ms / 1000.0
         
-        # Định dạng text theo kiểu "T= ..." 
-        # Nếu dưới 60s hiển thị giây lẻ (VD: T= 15.2 s), nếu trên hiển thị phút (VD: T= 1:30 min)
+        # Use "T= ..." format. Under 60 seconds, show decimal seconds;
+        # from 60 seconds onward, show minutes and seconds.
         if total_seconds < 60:
             time_text = f"T= {total_seconds:.1f} s"
         else:
@@ -424,31 +446,31 @@ class VideoEditor(QWidget):
             seconds = int(total_seconds % 60)
             time_text = f"T= {minutes}:{seconds:02d} min"
 
-        # 2. Khởi tạo Painter để vẽ lên Pixmap
+        # 2. Initialize a painter for drawing onto the pixmap.
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # 3. Cấu hình Font (Tự động scale theo chiều cao ảnh)
-        # Font size xấp xỉ 1/25 chiều cao ảnh, tối thiểu là 20px
+        # 3. Configure the font, scaled from the image height.
+        # Font size is roughly 1/25 of image height, with a 20 px minimum.
         font_size = max(20, pixmap.height() // 25)
         font = QFont("Arial", font_size, QFont.Weight.Bold)
         painter.setFont(font)
 
-        # 4. Cấu hình màu bút (Màu xanh dương giống hình mẫu)
-        # Mã màu Hex #0066cc (Strong Blue)
+        # 4. Configure the pen color.
+        # Hex color #0066cc: strong blue.
         pen = QPen(QColor("#0066cc"))
         painter.setPen(pen)
 
-        # 5. Vẽ chữ (Góc trên bên phải)
-        # Tạo padding (khoảng cách lề) dựa trên font size
+        # 5. Draw the text in the top-right corner.
+        # Build padding from the font size.
         padding = font_size 
         
-        # Vẽ text vào vùng hình chữ nhật đã trừ đi padding
-        # AlignTop | AlignRight: Đặt ở góc trên phải
+        # Draw text inside the padded rectangle.
+        # AlignTop | AlignRight places it in the top-right corner.
         draw_rect = pixmap.rect().adjusted(padding, padding, -padding, -padding)
         painter.drawText(draw_rect, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight, time_text)
 
-        # Kết thúc vẽ
+        # Finish drawing.
         painter.end()
 
         # --- END MODIFICATION ---

@@ -2,25 +2,25 @@
 
 ## Project Overview
 
-Tầng trình bày PyQt6 tổ chức theo MVVM, chịu trách nhiệm widget, signal/slot, worker orchestration và lifecycle UI.
+PyQt6 presentation layer organized around MVVM, responsible for widgets, signals/slots, worker orchestration, and UI lifecycle.
 
 ## Annotated Directory Structure
 
-- `ViewModels/` — state, validation, worker và adapter tới Models.
-- `Views/` — MainView, dialogs, workspace, sidebar và feature widgets.
+- `ViewModels/` — state, validation, workers, and adapters to Models.
+- `Views/` — MainView, dialogs, workspace, sidebar, and feature widgets.
 - `__init__.py` — package marker.
 
 ## Core Algorithms & Implementation
 
-- View không thực hiện filesystem, serial hoặc phân tích nặng trực tiếp.
-- Kết quả worker quay lại UI qua Qt queued signal.
-- Editor nặng được import tại điểm sử dụng để giảm startup cost.
-- Close event có thể bị hoãn khi worker đang chạy; `close_ready` tiếp tục thao tác sau khi tài nguyên an toàn.
+- Views do not perform filesystem, serial, or heavy analysis work directly.
+- Worker results return to the UI through Qt queued signals.
+- Heavy editors are imported at point of use to reduce startup cost.
+- Close events can be deferred while workers are running; `close_ready` resumes the operation after resources are safe.
 
 ## Data Flow
 
-1. User event bắt đầu tại View.
-2. ViewModel validate và gọi Model/worker.
-3. Signal kết quả cập nhật widget trên UI thread.
-4. Capture/record phát sự kiện media cụ thể thay vì chỉ phụ thuộc filesystem watcher.
-5. Shutdown thu session state, dừng worker/device và giải phóng widget theo thứ tự.
+1. User events start in the View.
+2. The ViewModel validates and calls a Model/worker.
+3. Result signals update widgets on the UI thread.
+4. Capture/record emits explicit media events instead of relying only on filesystem watchers.
+5. Shutdown collects session state, stops workers/devices, and releases widgets in order.

@@ -161,10 +161,31 @@ class SessionRestoreWorker(QThread):
                 )
             )
 
+            restored_project_names = {
+                project["name"] for project in projects
+            }
+            editors = []
+            for editor in self._session_manager.get_open_editors():
+                if self.isInterruptionRequested():
+                    return
+                if not isinstance(editor, dict):
+                    continue
+                full_path = editor.get("full_path")
+                project_name = editor.get("project_name")
+                if (
+                    isinstance(full_path, str)
+                    and project_name in restored_project_names
+                    and os.path.isfile(full_path)
+                ):
+                    editors.append({
+                        "full_path": full_path,
+                        "project_name": project_name,
+                    })
+
             result = {
                 "projects": projects,
                 "opened_items": self._session_manager.get_opened_items(),
-                "editors": self._session_manager.get_open_editors(),
+                "editors": editors,
                 "expanded_paths": self._session_manager.get_expanded_paths(),
                 "sidebar_order": sidebar_order,
                 "hidden_media_paths": (
