@@ -51,15 +51,6 @@ Application state is not written into the source tree. Configuration and session
 
 Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
 
-### Current implementation boundaries
-
-- Image and droplet coordinates are mapped to a fixed physical field of `5.0 mm × 3.0 mm`; there is no runtime spatial-calibration model.
-- **Double Points** is the implemented baseline method. **Mirror Image Method** is a placeholder and always reports unavailable.
-- **Young-Laplace Fit** is currently a circular-cap least-squares approximation; it does not solve the gravity-dependent Young-Laplace differential equation.
-- The hardware `query_period` value is persisted and displayed but is not used by a periodic status-query loop.
-- The directory is named `Release_1.1.2`, while `installer.iss` still declares installer version `1.1.1`.
-- The present tests cover path safety, recoverable deletion and Sidebar-only removal, loading lifecycles, sidebar scanning, lazy video playback, frame capture, MVVM boundaries, background droplet work, and screen fitting. They do not yet provide numerical regression tests for contact-angle accuracy.
-
 ## Annotated Directory Structure
 
 ```text
