@@ -480,7 +480,7 @@ class MainView(QMainWindow):
                         self.view_model.handle_save_as_project(project_name, folder)
                         self.view_model.handle_delete_project(project_name, False)
                 elif action == "DONT_SAVE":
-                    self.view_model.handle_delete_project(project_name, True)
+                    self.view_model.handle_delete_project(project_name, delete_from_disk=False)
             return
         else:
             dlg = DeleteResourcesDialog(
@@ -507,7 +507,7 @@ class MainView(QMainWindow):
                         self.view_model.handle_save_as_project(project_name, folder)
                         self.view_model.handle_delete_item(project_name, folder_name, True)
                 elif action == "DONT_SAVE":
-                    self.view_model.handle_delete_item(project_name, folder_name, True)
+                    self.view_model.handle_delete_item(project_name, folder_name, delete_from_disk=False)
             return
         else:
             dlg = DeleteResourcesDialog(
