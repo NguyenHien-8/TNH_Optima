@@ -3,6 +3,7 @@
 # Author: TRAN NGUYEN HIEN
 # Email: trannguyenhien29085@gmail.com
 ######################################################
+import copy
 import os
 from typing import List
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
@@ -36,10 +37,18 @@ class MainViewModel(QObject):
     item_renamed = pyqtSignal(str, str, str)
     file_loaded = pyqtSignal(bool, str, str, str, str)
     camera_error = pyqtSignal(str)
+    camera_list_updated = pyqtSignal(list)
+    camera_status_changed = pyqtSignal(str)
+    hardware_status_changed = pyqtSignal(bool, str)
     open_editor_requested = pyqtSignal(str, str)  # full_path, project_name
     file_renamed = pyqtSignal(str, str, str, str, str)  # project_name, item_name, media_type, old_name, new_name
+    file_removed = pyqtSignal(str, str, str, str, bool)
+    media_revealed = pyqtSignal(str, str, str, str)
+    hidden_media_paths_changed = pyqtSignal(list)
     session_restored = pyqtSignal(list)
     sidebar_loading_changed = pyqtSignal(str, bool)
+    background_workers_idle = pyqtSignal()
+    shutdown_ready = pyqtSignal()
 
     # === SIGNAL FOR SPLASH SCREEN ===
     progress_update = pyqtSignal(str)
@@ -67,6 +76,11 @@ class MainViewModel(QObject):
         self._deferred_task_timers = set()
         self._session_restore_started = False
         self._deferred_hardware_config = None
+        self._shutdown_started = False
+        self._shutdown_complete = False
+        self._shutdown_camera_done = False
+        self._shutdown_io_done = False
+        self._shutdown_worker = None
 
         self.progress_update.emit("Loading configurations...")
         self._load_saved_configurations()
@@ -78,11 +92,24 @@ class MainViewModel(QObject):
         self.clipboard_data = None
         self.file_clipboard = None
         self.opened_items = {}
+        self.hidden_media_paths = set()
 
         # === Initialize Session Management ===
         self.session_repo = SessionRepository()
         self.session_manager = SessionManager(self.session_repo)
         self.camera_manager.error_occurred_signal.connect(self.camera_error)
+        self.camera_manager.camera_list_signal.connect(
+            self.camera_list_updated
+        )
+        self.camera_manager.status_message_signal.connect(
+            self.camera_status_changed
+        )
+        self.hardware_manager.connection_status_changed.connect(
+            self.hardware_status_changed
+        )
+        self.camera_manager.shutdown_ready.connect(
+            self._on_camera_shutdown_ready
+        )
 
         self.progress_update.emit("Configuration loaded.")
 
@@ -101,8 +128,140 @@ class MainViewModel(QObject):
         if project_name in self.opened_items:
             del self.opened_items[project_name]
 
+    @staticmethod
+    def _normalize_media_path(path):
+        if not isinstance(path, str) or not path.strip():
+            return None
+        return os.path.normcase(os.path.abspath(os.path.normpath(path)))
+
+    def _set_hidden_media_paths(self, paths):
+        self.hidden_media_paths = {
+            normalized
+            for path in paths
+            if (normalized := self._normalize_media_path(path)) is not None
+        }
+        self.hidden_media_paths_changed.emit(
+            sorted(self.hidden_media_paths, key=str.casefold)
+        )
+
+    def _discard_hidden_media_under(self, root_path):
+        normalized_root = self._normalize_media_path(root_path)
+        if normalized_root is None:
+            return
+        root_prefix = normalized_root + os.sep
+        retained = {
+            path
+            for path in self.hidden_media_paths
+            if path != normalized_root and not path.startswith(root_prefix)
+        }
+        if retained != self.hidden_media_paths:
+            self.hidden_media_paths = retained
+            self.hidden_media_paths_changed.emit(
+                sorted(self.hidden_media_paths, key=str.casefold)
+            )
+
+    def _remap_hidden_media_under(self, old_root_path, new_root_path):
+        old_root = self._normalize_media_path(old_root_path)
+        new_root = self._normalize_media_path(new_root_path)
+        if old_root is None or new_root is None or old_root == new_root:
+            return
+        old_prefix = old_root + os.sep
+        remapped = set()
+        changed = False
+        for path in self.hidden_media_paths:
+            if path.startswith(old_prefix):
+                relative_path = path[len(old_prefix):]
+                remapped.add(os.path.join(new_root, relative_path))
+                changed = True
+            else:
+                remapped.add(path)
+        if changed:
+            self.hidden_media_paths = remapped
+            self.hidden_media_paths_changed.emit(
+                sorted(self.hidden_media_paths, key=str.casefold)
+            )
+
     def get_camera_dispatcher(self):
         return self.camera_dispatcher
+
+    def set_active_frame_view_model(self, view_model):
+        self.camera_dispatcher.set_active_view_model(view_model)
+
+    def clear_active_frame_view_model(self, view_model=None):
+        if (
+            view_model is None
+            or self.camera_dispatcher.is_active_view_model(view_model)
+        ):
+            self.camera_dispatcher.set_active_view_model(None)
+
+    def is_active_frame_view_model(self, view_model):
+        return self.camera_dispatcher.is_active_view_model(view_model)
+
+    def is_project_folder(self, folder_path):
+        return self.project_manager.is_folder_project(folder_path)
+
+    def is_item_folder(self, folder_path):
+        return self.project_manager.is_folder_item(folder_path)
+
+    def get_camera_name(self, camera_index):
+        return self.camera_manager.get_camera_name(camera_index)
+
+    def get_camera_status(self):
+        camera_index = self.camera_manager.active_camera_index
+        worker = self.camera_manager.current_thread
+        return {
+            "index": camera_index,
+            "name": (
+                self.camera_manager.get_camera_name(camera_index)
+                if camera_index is not None
+                else ""
+            ),
+            "running": worker is not None and worker.isRunning(),
+        }
+
+    def get_hardware_port(self):
+        return self.hardware_manager.current_config.get("port", "Unknown")
+
+    def create_file_editor_view_model(
+        self,
+        project_name,
+        file_name,
+        content,
+        full_path,
+    ):
+        from App.Presentation.ViewModels.FeatureViewModel.FileEditorViewModel import (
+            FileEditorViewModel,
+        )
+
+        return FileEditorViewModel(
+            project_name=project_name,
+            file_name=file_name,
+            content=content,
+            full_path=full_path,
+            camera_manager=self.camera_manager,
+            control_panel_manager=self.control_panel_manager,
+        )
+
+    def create_hardware_config_view_model(self):
+        from App.Presentation.ViewModels.DialogViewModel.ConfigHardwareViewModel import (
+            ConfigHardwareViewModel,
+        )
+
+        return ConfigHardwareViewModel(self.hardware_manager)
+
+    def create_camera_config_view_model(self):
+        from App.Presentation.ViewModels.DialogViewModel.ConfigCameraViewModel import (
+            ConfigCameraViewModel,
+        )
+
+        return ConfigCameraViewModel(self.camera_manager)
+
+    def create_motor_control_view_model(self):
+        from App.Presentation.ViewModels.DialogViewModel.MotorControlViewModel import (
+            MotorControlViewModel,
+        )
+
+        return MotorControlViewModel(self.control_panel_manager)
 
     def restore_session(self):
         if self._session_restore_started:
@@ -118,6 +277,11 @@ class MainViewModel(QObject):
     def _apply_restored_session(self, result):
         projects = result.get("projects", []) if isinstance(result, dict) else []
         saved_opened_items = result.get("opened_items", {}) if isinstance(result, dict) else {}
+        self._set_hidden_media_paths(
+            result.get("hidden_media_paths", [])
+            if isinstance(result, dict)
+            else []
+        )
 
         for project in projects:
             name = project.get("name")
@@ -202,6 +366,9 @@ class MainViewModel(QObject):
             self.session_manager.set_expanded_paths(expanded_paths)
             self.session_manager.set_opened_items(self.opened_items)
             self.session_manager.set_sidebar_order(sidebar_order)
+            self.session_manager.set_hidden_media_paths(
+                sorted(self.hidden_media_paths, key=str.casefold)
+            )
             self.session_manager.save_all()
             return True
         except Exception:
@@ -228,6 +395,27 @@ class MainViewModel(QObject):
         if project_name not in self.project_manager.current_projects:
             return item_name
         return self.project_manager.get_file_path(project_name, item_name)
+
+    def get_media_picker_config(
+        self,
+        project_name,
+        item_name,
+        media_type,
+    ):
+        extensions = self.project_manager.get_media_extensions(media_type)
+        project_path = self.get_project_path(project_name)
+        if not extensions or not project_path:
+            return None
+        patterns = " ".join(f"*{extension}" for extension in extensions)
+        return {
+            "title": f"Open {media_type} for '{item_name}'",
+            "directory": os.path.join(
+                project_path,
+                item_name,
+                media_type,
+            ),
+            "filter": f"{media_type} Files ({patterns})",
+        }
 
     def get_all_project_names(self) -> list:
         return list(self.project_manager.current_projects.keys())
@@ -333,6 +521,8 @@ class MainViewModel(QObject):
         worker = self.sender()
         if worker in self.active_workers:
             self.active_workers.remove(worker)
+        if not any(current.isRunning() for current in self.active_workers):
+            self.background_workers_idle.emit()
 
     def shutdown_workers(self, wait_ms=0):
         for timer in list(self._deferred_task_timers):
@@ -345,8 +535,6 @@ class MainViewModel(QObject):
             if worker.isRunning():
                 worker.requestInterruption()
                 worker.quit()
-                if wait_ms > 0:
-                    worker.wait(wait_ms)
             if worker.isRunning():
                 running_workers.append(worker)
                 continue
@@ -358,6 +546,70 @@ class MainViewModel(QObject):
                 self.active_workers.remove(worker)
             worker.deleteLater()
         return not running_workers
+
+    def begin_application_shutdown(
+        self,
+        editor_list,
+        expanded_paths,
+        sidebar_order,
+    ):
+        """Persist state and release devices without blocking the GUI thread."""
+        if self._shutdown_complete:
+            return True
+        if self._shutdown_started:
+            return False
+
+        self._shutdown_started = True
+        self._shutdown_camera_done = self.camera_manager.cleanup()
+
+        snapshot_editors = [dict(editor) for editor in editor_list]
+        snapshot_expanded = list(expanded_paths)
+        snapshot_order = copy.deepcopy(sidebar_order)
+
+        def release_hardware_and_save_session():
+            self.hardware_manager.cleanup()
+            return self.save_session_with_editors(
+                snapshot_editors,
+                snapshot_expanded,
+                snapshot_order,
+            )
+
+        worker = FunctionWorker(release_hardware_and_save_session)
+        self._shutdown_worker = worker
+        worker.result_ready.connect(self._on_shutdown_io_finished)
+        worker.error_occurred.connect(self._on_shutdown_io_error)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._check_shutdown_complete()
+        return self._shutdown_complete
+
+    @pyqtSlot()
+    def _on_camera_shutdown_ready(self):
+        self._shutdown_camera_done = True
+        self._check_shutdown_complete()
+
+    @pyqtSlot(object)
+    def _on_shutdown_io_finished(self, _saved):
+        self._shutdown_io_done = True
+        self._shutdown_worker = None
+        self._check_shutdown_complete()
+
+    @pyqtSlot(str)
+    def _on_shutdown_io_error(self, message):
+        self.error_occurred.emit(message)
+        self._shutdown_io_done = True
+        self._shutdown_worker = None
+        self._check_shutdown_complete()
+
+    def _check_shutdown_complete(self):
+        if (
+            self._shutdown_started
+            and self._shutdown_camera_done
+            and self._shutdown_io_done
+            and not self._shutdown_complete
+        ):
+            self._shutdown_complete = True
+            self.shutdown_ready.emit()
 
     def handle_create_project(self):
         name = f"Untitled-{self.untitled_count}"
@@ -445,24 +697,28 @@ class MainViewModel(QObject):
 
     def handle_delete_item(self, project_name: str, folder_name: str, delete_from_disk: bool):
         if delete_from_disk:
-            self.request_unwatch_item.emit(project_name, folder_name)
             self.request_close_editors_for_item.emit(project_name, folder_name)
+            item_path = self.get_item_path(project_name, folder_name)
 
             def on_deleted(result):
                 success, message = result
                 if success:
+                    self._discard_hidden_media_under(item_path)
                     self._remove_opened_item(project_name, folder_name)
                     self.item_removed.emit(project_name, folder_name)
-                    self.status_message.emit(f"Item '{folder_name}' deleted permanently.")
+                    self.status_message.emit(
+                        f"Item '{folder_name}' moved to Recycle Bin."
+                    )
                 else:
                     self.error_occurred.emit(message)
 
             self._run_background_task(
-                f"Deleting item '{folder_name}'...",
+                f"Moving item '{folder_name}' to Recycle Bin...",
                 self.project_manager.delete_item,
                 on_deleted,
                 project_name,
                 folder_name,
+                delay_ms=100,
             )
         else:
             # Only remove from tree, do not delete files
@@ -473,10 +729,19 @@ class MainViewModel(QObject):
         if new_name and new_name != old_name:
             self.request_unwatch_item.emit(project_name, old_name)
             self.request_close_editors_for_item.emit(project_name, old_name)
+            old_item_path = self.get_item_path(project_name, old_name)
+            new_item_path = os.path.join(
+                self.get_project_path(project_name),
+                new_name,
+            )
 
             def on_renamed(result):
                 success, message = result
                 if success:
+                    self._remap_hidden_media_under(
+                        old_item_path,
+                        new_item_path,
+                    )
                     if project_name in self.opened_items and old_name in self.opened_items[project_name]:
                         self.opened_items[project_name].remove(old_name)
                         self.opened_items[project_name].add(new_name)
@@ -499,6 +764,7 @@ class MainViewModel(QObject):
             return
         self.request_unwatch_project.emit(project_name)
         self.request_close_editors_for_item.emit(project_name, "")
+        old_project_path = self.get_project_path(project_name)
 
         def save_project_and_list():
             success, message = self.project_manager.save_project_as(
@@ -514,9 +780,13 @@ class MainViewModel(QObject):
         def on_saved(result):
             success, message, items = result
             if success:
+                new_path = self.project_manager.get_project_path(project_name)
+                self._remap_hidden_media_under(
+                    old_project_path,
+                    new_path,
+                )
                 self._remove_project_items(project_name)
                 self.project_removed.emit(project_name)
-                new_path = self.project_manager.get_project_path(project_name)
                 self.project_added.emit(project_name, new_path)
                 for item_name in items:
                     self.item_added.emit(
@@ -551,23 +821,27 @@ class MainViewModel(QObject):
 
     def handle_delete_project(self, project_name: str, delete_from_disk: bool):
         if delete_from_disk:
-            self.request_unwatch_project.emit(project_name)
             self.request_close_editors_for_item.emit(project_name, "")
+            project_path = self.get_project_path(project_name)
 
             def on_deleted(result):
                 success, message = result
                 if success:
+                    self._discard_hidden_media_under(project_path)
                     self._remove_project_items(project_name)
                     self.project_removed.emit(project_name)
-                    self.status_message.emit(f"Project '{project_name}' deleted.")
+                    self.status_message.emit(
+                        f"Project '{project_name}' moved to Recycle Bin."
+                    )
                 else:
                     self.error_occurred.emit(message)
 
             self._run_background_task(
-                f"Deleting project '{project_name}'...",
+                f"Moving project '{project_name}' to Recycle Bin...",
                 self.project_manager.delete_project,
                 on_deleted,
                 project_name,
+                delay_ms=100,
             )
         else:
             def on_closed(_):
@@ -585,10 +859,19 @@ class MainViewModel(QObject):
         if new_name and new_name != old_name:
             self.request_unwatch_project.emit(old_name)
             self.request_close_editors_for_item.emit(old_name, "")
+            old_project_path = self.get_project_path(old_name)
+            new_project_path = os.path.join(
+                os.path.dirname(old_project_path),
+                new_name,
+            )
 
             def on_renamed(result):
                 success, message = result
                 if success:
+                    self._remap_hidden_media_under(
+                        old_project_path,
+                        new_project_path,
+                    )
                     if old_name in self.opened_items:
                         self.opened_items[new_name] = self.opened_items.pop(old_name)
                     self.project_renamed.emit(old_name, new_name)
@@ -636,6 +919,14 @@ class MainViewModel(QObject):
             if action_type == 'CUT' and self.clipboard_data:
                 src_project = self.clipboard_data['project']
                 src_folder = self.clipboard_data['folder']
+                src_item_path = os.path.join(
+                    self.get_project_path(src_project),
+                    src_folder,
+                )
+                self._remap_hidden_media_under(
+                    src_item_path,
+                    new_item_path,
+                )
                 self.item_removed.emit(src_project, src_folder)
                 self._remove_opened_item(src_project, src_folder)
                 self.clipboard_data = None
@@ -699,37 +990,126 @@ class MainViewModel(QObject):
             delay_ms=100,
         )
 
-    def handle_delete_file(self, project_name, item_name, media_type, file_name):
-        # Build full path
+    def handle_delete_file(
+        self,
+        project_name,
+        item_name,
+        media_type,
+        file_name,
+        delete_from_disk,
+    ):
         project_path = self.get_project_path(project_name)
-        if media_type and media_type.strip():
-            full_path = os.path.join(project_path, item_name, media_type, file_name)
-        else:
-            full_path = os.path.join(project_path, item_name, file_name)
+        full_path = os.path.join(
+            project_path,
+            item_name,
+            media_type,
+            file_name,
+        )
+        normalized_path = self._normalize_media_path(full_path)
 
-        # If it's a video file, stop player first
+        if not delete_from_disk:
+            if normalized_path is not None:
+                self.hidden_media_paths.add(normalized_path)
+                self.hidden_media_paths_changed.emit(
+                    sorted(self.hidden_media_paths, key=str.casefold)
+                )
+            self.file_removed.emit(
+                project_name,
+                item_name,
+                media_type,
+                file_name,
+                True,
+            )
+            self.status_message.emit(
+                f"File '{file_name}' removed from the Sidebar."
+            )
+            return
+
         if file_name.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.flv')):
             self.request_stop_video_editor.emit(full_path)
-
-        # Request to close editor tab if open
         self.request_close_editor_for_file.emit(full_path)
 
         def on_deleted(result):
             success, message = result
             if success:
-                self.status_message.emit(f"File '{file_name}' deleted.")
+                if normalized_path in self.hidden_media_paths:
+                    self.hidden_media_paths.discard(normalized_path)
+                    self.hidden_media_paths_changed.emit(
+                        sorted(self.hidden_media_paths, key=str.casefold)
+                    )
+                self.file_removed.emit(
+                    project_name,
+                    item_name,
+                    media_type,
+                    file_name,
+                    False,
+                )
+                self.status_message.emit(
+                    f"File '{file_name}' moved to Recycle Bin."
+                )
             else:
                 self.error_occurred.emit(message)
 
         self._run_background_task(
-            f"Deleting file '{file_name}'...",
+            f"Moving file '{file_name}' to Recycle Bin...",
             self.project_manager.delete_file,
             on_deleted,
             project_name,
             item_name,
             media_type,
             file_name,
+            True,
             delay_ms=100,
+        )
+
+    def handle_open_media_file(
+        self,
+        project_name,
+        item_name,
+        media_type,
+        file_path,
+    ):
+        def on_validated(result):
+            success, message, file_name, validated_path = result
+            if not success:
+                self.error_occurred.emit(message)
+                return
+
+            normalized_path = self._normalize_media_path(validated_path)
+            was_hidden = normalized_path in self.hidden_media_paths
+            if was_hidden:
+                self.hidden_media_paths.discard(normalized_path)
+                self.hidden_media_paths_changed.emit(
+                    sorted(self.hidden_media_paths, key=str.casefold)
+                )
+
+            self.media_revealed.emit(
+                project_name,
+                item_name,
+                media_type,
+                validated_path,
+            )
+            self.open_editor_requested.emit(
+                validated_path,
+                project_name,
+            )
+            self.status_message.emit(
+                (
+                    f"{media_type} '{file_name}' restored to the Sidebar."
+                    if was_hidden
+                    else f"{media_type} '{file_name}' opened."
+                )
+            )
+
+        self._run_background_task(
+            f"Opening {media_type.lower()}...",
+            self.project_manager.validate_media_file_for_open,
+            on_validated,
+            project_name,
+            item_name,
+            media_type,
+            file_path,
+            show_sidebar_loading=True,
         )
 
     def handle_paste_file(self, target_project, target_item, target_media):

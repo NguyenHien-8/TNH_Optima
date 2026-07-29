@@ -35,7 +35,12 @@ from PyQt6.QtCore import (
 )
 
 from App.Infrastructure.Helpers.ResourceHelper import resource_path
-from App.Presentation.ViewModels.Workers import FunctionWorker
+from App.Infrastructure.Helpers.MediaHelper import (
+    MEDIA_EXTENSIONS as SUPPORTED_MEDIA_EXTENSIONS,
+)
+from App.Presentation.ViewModels.FeatureViewModel.SidebarViewModel import (
+    SidebarViewModel,
+)
 
 
 class SidebarShimmerBar(QWidget):
@@ -723,10 +728,7 @@ class DraggableTreeWidget(QTreeWidget):
 class ProjectSidebar(QDockWidget):
     MEDIA_LOADED_ROLE = int(Qt.ItemDataRole.UserRole) + 1
     MAX_CONCURRENT_MEDIA_SCANS = 2
-    MEDIA_EXTENSIONS = {
-        "Image": (".jpg", ".jpeg", ".png", ".bmp", ".gif"),
-        "Video": (".mp4", ".avi", ".mov", ".mkv", ".flv"),
-    }
+    MEDIA_EXTENSIONS = SUPPORTED_MEDIA_EXTENSIONS
 
     sig_new_item = pyqtSignal(str)
     sig_delete = pyqtSignal(str)
@@ -741,6 +743,7 @@ class ProjectSidebar(QDockWidget):
     sig_item_save = pyqtSignal(str, str)
     sig_item_delete = pyqtSignal(str, str)
     sig_item_rename = pyqtSignal(str, str)
+    sig_item_open_media = pyqtSignal(str, str, str)
     sig_open_editor = pyqtSignal(str, str)
 
     sig_file_copy = pyqtSignal(str, str, str, str)
@@ -748,6 +751,28 @@ class ProjectSidebar(QDockWidget):
     sig_file_rename = pyqtSignal(str, str, str, str, str)
     sig_file_delete = pyqtSignal(str, str, str, str)
     sig_file_paste = pyqtSignal(str, str, str)
+    shutdown_ready = pyqtSignal()
+
+    # Read-only compatibility views for older integrations and diagnostics.
+    @property
+    def _media_scan_workers(self):
+        return self.scan_view_model._workers
+
+    @property
+    def _media_scan_queue(self):
+        return self.scan_view_model._queue
+
+    @property
+    def _pending_media_refreshes(self):
+        return set(self.scan_view_model._pending_refreshes)
+
+    @staticmethod
+    def _scan_media_directory(media_dir, media_type, hidden_names=()):
+        return SidebarViewModel._scan_media_directory(
+            media_dir,
+            ProjectSidebar.MEDIA_EXTENSIONS.get(media_type, ()),
+            hidden_names,
+        )
 
     def __init__(self, parent=None):
         super().__init__("Project Manager", parent)
@@ -775,10 +800,30 @@ class ProjectSidebar(QDockWidget):
         self.fs_watcher = QFileSystemWatcher(self)
         self.fs_watcher.directoryChanged.connect(self.on_directory_changed)
         self.watched_paths = {}
-        self._media_scan_workers = {}
-        self._media_scan_queue = {}
+        self.scan_view_model = SidebarViewModel(
+            self.MAX_CONCURRENT_MEDIA_SCANS,
+            self,
+        )
+        self.scan_view_model.media_scan_completed.connect(
+            self._apply_media_scan
+        )
+        self.scan_view_model.media_scan_failed.connect(
+            lambda path, message: print(
+                f"Error scanning {path}: {message}"
+            )
+        )
+        self.scan_view_model.loading_changed.connect(
+            lambda active: self.set_loading_source(
+                "sidebar-media-scans",
+                active,
+            )
+        )
+        self.scan_view_model.shutdown_ready.connect(
+            self._on_scan_shutdown_ready
+        )
         self._media_name_cache = {}
-        self._pending_media_refreshes = set()
+        self._hidden_media_paths = set()
+        self._hidden_media_names_by_dir = {}
         self._shutting_down = False
         self._loading_sources = set()
 
@@ -825,12 +870,6 @@ class ProjectSidebar(QDockWidget):
 
     def is_loading(self):
         return bool(self._loading_sources)
-
-    def _sync_media_scan_loading(self):
-        self.set_loading_source(
-            "sidebar-media-scans",
-            bool(self._media_scan_queue or self._media_scan_workers),
-        )
 
     def _init_icons(self):
         style = self.style()
@@ -1008,6 +1047,9 @@ class ProjectSidebar(QDockWidget):
 
     def _show_item_context_menu(self, project_name, folder_name, pos):
         menu = QMenu(self)
+        act_open_image = menu.addAction("Open Image...")
+        act_open_video = menu.addAction("Open Video...")
+        menu.addSeparator()
         act_copy = menu.addAction("Copy")
         act_cut = menu.addAction("Cut")
         menu.addSeparator()
@@ -1016,7 +1058,19 @@ class ProjectSidebar(QDockWidget):
 
         action = menu.exec(self.project_tree.mapToGlobal(pos))
 
-        if action == act_copy:
+        if action == act_open_image:
+            self.sig_item_open_media.emit(
+                project_name,
+                folder_name,
+                "Image",
+            )
+        elif action == act_open_video:
+            self.sig_item_open_media.emit(
+                project_name,
+                folder_name,
+                "Video",
+            )
+        elif action == act_copy:
             self.sig_item_copy.emit(project_name, folder_name)
         elif action == act_cut:
             self.sig_item_cut.emit(project_name, folder_name)
@@ -1106,6 +1160,59 @@ class ProjectSidebar(QDockWidget):
 
             project_item.setExpanded(True)
 
+    @staticmethod
+    def _normalize_media_path(path):
+        if not isinstance(path, str) or not path.strip():
+            return None
+        return os.path.normcase(os.path.abspath(os.path.normpath(path)))
+
+    def _is_media_hidden(self, media_dir, file_name):
+        full_path = self._normalize_media_path(
+            os.path.join(media_dir, file_name)
+        )
+        return full_path in self._hidden_media_paths
+
+    def _hidden_names_for_media_dir(self, media_dir):
+        normalized_dir = self._normalize_media_path(media_dir)
+        if normalized_dir is None:
+            return ()
+        return tuple(
+            self._hidden_media_names_by_dir.get(normalized_dir, ())
+        )
+
+    def _add_hidden_media_path(self, path):
+        if path is None:
+            return
+        self._hidden_media_paths.add(path)
+        directory = os.path.dirname(path)
+        self._hidden_media_names_by_dir.setdefault(directory, set()).add(
+            os.path.normcase(os.path.basename(path))
+        )
+
+    def _discard_hidden_media_path(self, path):
+        if path is None:
+            return
+        self._hidden_media_paths.discard(path)
+        directory = os.path.dirname(path)
+        hidden_names = self._hidden_media_names_by_dir.get(directory)
+        if hidden_names is None:
+            return
+        hidden_names.discard(os.path.normcase(os.path.basename(path)))
+        if not hidden_names:
+            del self._hidden_media_names_by_dir[directory]
+
+    @pyqtSlot(list)
+    def set_hidden_media_paths(self, paths):
+        normalized_paths = {
+            normalized
+            for path in paths
+            if (normalized := self._normalize_media_path(path)) is not None
+        }
+        self._hidden_media_paths.clear()
+        self._hidden_media_names_by_dir.clear()
+        for path in normalized_paths:
+            self._add_hidden_media_path(path)
+
     @pyqtSlot(QTreeWidgetItem)
     def _on_item_expanded(self, item):
         if item is None or item.text(0) not in ("Image", "Video"):
@@ -1125,8 +1232,7 @@ class ProjectSidebar(QDockWidget):
         cached_names = self._media_name_cache.get(media_dir)
         if (
             cached_names is not None
-            and media_dir not in self._media_scan_workers
-            and media_dir not in self._pending_media_refreshes
+            and not self.scan_view_model.is_scan_pending(media_dir)
         ):
             self._apply_media_scan(
                 project_item.text(0),
@@ -1144,8 +1250,10 @@ class ProjectSidebar(QDockWidget):
         image_dir = os.path.join(item_path, "Image")
         video_dir = os.path.join(item_path, "Video")
         for media_dir in (image_dir, video_dir):
-            if os.path.exists(media_dir) and media_dir not in self.watched_paths:
-                self.fs_watcher.addPath(media_dir)
+            if (
+                media_dir not in self.watched_paths
+                and self.fs_watcher.addPath(media_dir)
+            ):
                 self.watched_paths[media_dir] = (project_name, item_name, os.path.basename(media_dir))
 
     def _unwatch_item_media(self, item_path):
@@ -1155,10 +1263,8 @@ class ProjectSidebar(QDockWidget):
             if media_dir in self.watched_paths:
                 self.fs_watcher.removePath(media_dir)
                 del self.watched_paths[media_dir]
-            self._media_scan_queue.pop(media_dir, None)
+            self.scan_view_model.cancel_media_scan(media_dir)
             self._media_name_cache.pop(media_dir, None)
-            self._pending_media_refreshes.discard(media_dir)
-        self._sync_media_scan_loading()
 
     @pyqtSlot(str, str)
     def unwatch_item_media(self, project_name, folder_name):
@@ -1196,9 +1302,22 @@ class ProjectSidebar(QDockWidget):
         self, project_name, item_name, media_type, full_path
     ):
         """Reveal a newly captured media file without relying on OS watcher timing."""
-        if media_type not in ("Image", "Video") or not os.path.isfile(full_path):
+        if media_type not in ("Image", "Video"):
             return
+        self.reveal_media_file(
+            project_name,
+            item_name,
+            media_type,
+            full_path,
+        )
 
+    @pyqtSlot(str, str, str, str)
+    def reveal_media_file(
+        self, project_name, item_name, media_type, full_path
+    ):
+        """Render a media path already validated by the ViewModel."""
+        if media_type not in ("Image", "Video"):
+            return
         project_items = self.project_tree.findItems(
             project_name, Qt.MatchFlag.MatchExactly
         )
@@ -1239,6 +1358,8 @@ class ProjectSidebar(QDockWidget):
             return
 
         filename = os.path.basename(full_path)
+        if self._is_media_hidden(media_dir, filename):
+            return
         media_node.setChildIndicatorPolicy(
             QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
         )
@@ -1305,92 +1426,22 @@ class ProjectSidebar(QDockWidget):
         if not item_path:
             return
         media_dir = os.path.join(item_path, media_type)
-        if not os.path.exists(media_dir):
-            return
-
-        existing_worker = self._media_scan_workers.get(media_dir)
-        if existing_worker is not None and existing_worker.isRunning():
-            self._pending_media_refreshes.add(media_dir)
-            return
-        if media_dir in self._media_scan_queue:
+        if media_dir not in self.watched_paths:
             return
 
         media_node.setData(0, self.MEDIA_LOADED_ROLE, False)
-        self._media_scan_queue[media_dir] = (
+        self.scan_view_model.request_media_scan(
             project_name,
             item_name,
             media_type,
+            media_dir,
+            self.MEDIA_EXTENSIONS.get(media_type, ()),
+            self._hidden_names_for_media_dir(media_dir),
         )
-        self._start_queued_media_scans()
-
-    def _start_queued_media_scans(self):
-        while (
-            not self._shutting_down
-            and self._media_scan_queue
-            and len(self._media_scan_workers)
-            < self.MAX_CONCURRENT_MEDIA_SCANS
-        ):
-            media_dir = next(iter(self._media_scan_queue))
-            project_name, item_name, media_type = (
-                self._media_scan_queue.pop(media_dir)
-            )
-            if media_dir not in self.watched_paths:
-                continue
-
-            worker = FunctionWorker(
-                self._scan_media_directory, media_dir, media_type
-            )
-            self._media_scan_workers[media_dir] = worker
-            worker.result_ready.connect(
-                lambda names, p=project_name, i=item_name, m=media_type,
-                       path=media_dir: self._apply_media_scan(
-                    p, i, m, path, names
-                )
-            )
-            worker.error_occurred.connect(
-                lambda message, path=media_dir: print(
-                    f"Error scanning {path}: {message}"
-                )
-            )
-            worker.finished.connect(
-                lambda path=media_dir, current=worker: self._finish_media_scan(
-                    path, current
-                )
-            )
-            worker.finished.connect(worker.deleteLater)
-            worker.start()
-        self._sync_media_scan_loading()
-
-    @staticmethod
-    def _scan_media_directory(media_dir, media_type):
-        valid_extensions = ProjectSidebar.MEDIA_EXTENSIONS.get(
-            media_type, ()
-        )
-        with os.scandir(media_dir) as entries:
-            names = [
-                entry.name
-                for entry in entries
-                if entry.is_file()
-                and os.path.splitext(entry.name)[1].lower() in valid_extensions
-            ]
-        return sorted(names, key=str.casefold)
-
-    def _finish_media_scan(self, media_dir, worker):
-        if self._media_scan_workers.get(media_dir) is worker:
-            del self._media_scan_workers[media_dir]
-        if media_dir in self._pending_media_refreshes:
-            self._pending_media_refreshes.discard(media_dir)
-            info = self.watched_paths.get(media_dir)
-            if info and not self._shutting_down:
-                self._media_scan_queue[media_dir] = info
-        self._start_queued_media_scans()
-        self._sync_media_scan_loading()
 
     def _apply_media_scan(
         self, project_name, item_name, media_type, media_dir, names
     ):
-        if media_dir in self._pending_media_refreshes:
-            return
         current_info = self.watched_paths.get(media_dir)
         if current_info != (project_name, item_name, media_type):
             return
@@ -1422,7 +1473,11 @@ class ProjectSidebar(QDockWidget):
         if media_node is None:
             return
 
-        names = list(names)
+        names = [
+            name
+            for name in names
+            if not self._is_media_hidden(media_dir, name)
+        ]
         self._media_name_cache[media_dir] = names
         media_node.setChildIndicatorPolicy(
             QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
@@ -1458,21 +1513,15 @@ class ProjectSidebar(QDockWidget):
         else:
             media_node.setData(0, self.MEDIA_LOADED_ROLE, True)
 
-    def shutdown(self, wait_ms=500):
+    def shutdown(self, wait_ms=0):
         self._shutting_down = True
-        self._media_scan_queue.clear()
-        self._pending_media_refreshes.clear()
-        still_running = False
-        for worker in list(self._media_scan_workers.values()):
-            if worker.isRunning():
-                worker.requestInterruption()
-                worker.wait(wait_ms)
-            still_running = still_running or worker.isRunning()
-        if not still_running:
-            self._media_scan_workers.clear()
-            self._media_name_cache.clear()
-            self.set_loading_source("sidebar-media-scans", False)
-        return not still_running
+        return self.scan_view_model.shutdown()
+
+    @pyqtSlot()
+    def _on_scan_shutdown_ready(self):
+        self._media_name_cache.clear()
+        self.set_loading_source("sidebar-media-scans", False)
+        self.shutdown_ready.emit()
 
     def remove_project_item(self, project_name):
         items = self.project_tree.findItems(project_name, Qt.MatchFlag.MatchExactly)
@@ -1499,6 +1548,85 @@ class ProjectSidebar(QDockWidget):
                     project_item.removeChild(child)
                     del child
                     break
+
+    @pyqtSlot(str, str, str, str, bool)
+    def remove_file_node(
+        self,
+        project_name,
+        item_name,
+        media_type,
+        file_name,
+        hide_from_scans,
+    ):
+        project_items = self.project_tree.findItems(
+            project_name,
+            Qt.MatchFlag.MatchExactly,
+        )
+        if not project_items:
+            return
+        project_item = project_items[0]
+        item_node = next(
+            (
+                project_item.child(index)
+                for index in range(project_item.childCount())
+                if project_item.child(index).text(0) == item_name
+            ),
+            None,
+        )
+        if item_node is None:
+            return
+
+        item_path = item_node.data(0, Qt.ItemDataRole.UserRole)
+        if not item_path:
+            return
+        media_dir = os.path.join(item_path, media_type)
+        full_path = self._normalize_media_path(
+            os.path.join(media_dir, file_name)
+        )
+        if hide_from_scans:
+            self._add_hidden_media_path(full_path)
+        else:
+            self._discard_hidden_media_path(full_path)
+
+        cached_names = self._media_name_cache.get(media_dir)
+        if cached_names is not None:
+            self._media_name_cache[media_dir] = [
+                name
+                for name in cached_names
+                if os.path.normcase(name) != os.path.normcase(file_name)
+            ]
+
+        media_node = next(
+            (
+                item_node.child(index)
+                for index in range(item_node.childCount())
+                if item_node.child(index).text(0) == media_type
+            ),
+            None,
+        )
+        if media_node is None:
+            return
+
+        for index in range(media_node.childCount() - 1, -1, -1):
+            child = media_node.child(index)
+            if os.path.normcase(child.text(0)) == os.path.normcase(file_name):
+                removed = media_node.takeChild(index)
+                del removed
+
+        visible_names = self._media_name_cache.get(media_dir)
+        if visible_names is not None:
+            media_node.setChildIndicatorPolicy(
+                QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                if visible_names
+                else QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicatorWhenChildless
+            )
+
+        if not hide_from_scans:
+            self._refresh_media_node(
+                project_name,
+                item_name,
+                media_type,
+            )
 
     def clear_all_items(self):
         for path in list(self.watched_paths.keys()):

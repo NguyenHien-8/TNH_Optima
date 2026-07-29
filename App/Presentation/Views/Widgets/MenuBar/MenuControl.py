@@ -58,8 +58,10 @@ class MenuControl(QMenu):
     def on_motor_control(self):
         from App.Presentation.Views.Dialog.MotorControlDialog import MotorControlDialog
 
-        control_manager = self.parent_window.view_model.control_panel_manager
-        dialog = MotorControlDialog(control_manager, self.parent_window)
+        view_model = (
+            self.parent_window.view_model.create_motor_control_view_model()
+        )
+        dialog = MotorControlDialog(view_model, self.parent_window)
         dialog.exec()
 
     def on_open_file_editor(self):

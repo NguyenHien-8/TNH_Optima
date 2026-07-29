@@ -8,7 +8,9 @@ Tầng hạ tầng cung cấp persistence, định vị tài nguyên và xử l�
 
 - `CrashHandler.py` — rotating log, Python/thread exception hook và native fault log.
 - `Helpers/ResourceHelper.py` — giải quyết đường dẫn icon, QSS và asset trong source/PyInstaller.
-- `Helpers/WindowOwnershipHelper.py` — AppUserModelID, logical-owner registration và Win32 taskbar style cho secondary windows.
+- `Helpers/RecycleBinHelper.py` — chuyển file hoặc thư mục vào Windows Recycle Bin; nếu native recycle lỗi thì giữ nguyên nội dung, không fallback sang xóa vĩnh viễn.
+- `Helpers/MediaHelper.py` — nguồn định nghĩa dùng chung cho các phần mở rộng Image/Video được hỗ trợ.
+- `Helpers/WindowOwnershipHelper.py` — AppUserModelID, taskbar style và scale/center secondary window theo `availableGeometry()`.
 - `Repositories/` — Config/Session SQLite repositories và `StoragePath`.
 - `Persistence/` — vị trí database legacy dùng cho migration.
 - `__init__.py` — package marker.
@@ -27,4 +29,5 @@ Tầng hạ tầng cung cấp persistence, định vị tài nguyên và xử l�
 2. Repository yêu cầu đường dẫn từ `StoragePath`, mở transaction ngắn và đóng connection ngay.
 3. ViewModel/Model đọc ghi cấu hình hoặc session qua repository.
 4. Exception chưa xử lý được ghi log và hiển thị thông báo an toàn trên main thread.
-5. Startup đặt taskbar identity trước UI đầu tiên; secondary window tạo native handle, gán owner và taskbar style trước khi show.
+5. Startup đặt taskbar identity trước UI đầu tiên; secondary window tạo native handle và taskbar style trước khi show.
+6. FileEditor/Droplet window được giới hạn theo vùng làm việc của màn hình hiện tại để không tràn màn hình.

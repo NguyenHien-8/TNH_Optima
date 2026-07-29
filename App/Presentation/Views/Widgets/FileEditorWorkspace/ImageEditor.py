@@ -4,20 +4,17 @@
 # Email: trannguyenhien29085@gmail.com
 #########################################################################
 import os
-import numpy as np
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                             QPushButton, QFileDialog, QSizePolicy, QMessageBox,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QFileDialog, QMessageBox,
                              QGroupBox)
 from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal, QSize, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter
-
-import matplotlib
-matplotlib.use('Qt5Agg')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+from PyQt6.QtGui import QImage, QPixmap, QIcon
 
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet, resource_path
+from App.Presentation.Views.Widgets.FileEditorWorkspace.ImageCanvas import (
+    ImageCanvas,
+)
 
 
 class ImageEditor(QWidget):
@@ -29,21 +26,10 @@ class ImageEditor(QWidget):
         self.view_model = view_model
         self.current_pixmap = None
         self._close_when_idle = False
+        self._pending_image_path = None
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("ImageEditor")
-
-        # [CHANGE] Variables for zoom/pan
-        self.default_xlim = (0.0, 5.0)
-        self.default_ylim = (0.0, 3.0)
-        self.xlim = self.default_xlim
-        self.ylim = self.default_ylim
-        self.x_bound = (0.0, 5.0)
-        self.y_bound = (0.0, 3.0)
-
-        self.is_panning = False
-        self.pan_start_x = 0.0
-        self.pan_start_y = 0.0
 
         self.setup_ui()
         self.connect_view_model_signals()
@@ -64,12 +50,7 @@ class ImageEditor(QWidget):
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(5)
 
-        # Replace QLabel with FigureCanvas
-        self.figure = Figure(figsize=(7, 5), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setParent(self)
-        self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.canvas = ImageCanvas(self)
         main_layout.addWidget(self.canvas, stretch=3)
 
         # Control panel at the bottom
@@ -146,16 +127,6 @@ class ImageEditor(QWidget):
 
         main_layout.addWidget(control_panel, stretch=0)
 
-        # Connect Matplotlib events for zoom/pan
-        self._mpl_connection_ids = [
-            self.canvas.mpl_connect('scroll_event', self.on_scroll),
-            self.canvas.mpl_connect('button_press_event', self.on_mouse_press),
-            self.canvas.mpl_connect('button_release_event', self.on_mouse_release),
-            self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move),
-        ]
-
-        self.ax = None  # will be created when drawing the image
-
     def connect_view_model_signals(self):
         self.view_model.image_loaded.connect(self.on_image_loaded)
 
@@ -164,146 +135,27 @@ class ImageEditor(QWidget):
         self.btn_capture.clicked.connect(self.on_capture_clicked)
         self.btn_calibration.clicked.connect(self.on_calibration_clicked)
 
-    # Function to convert QPixmap to numpy array (RGB)
-    def pixmap_to_array(self, pixmap):
-        """Convert QPixmap to a numpy array (H, W, 3) of type uint8."""
-        image = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB888)
-        ptr = image.bits()
-        ptr.setsize(image.sizeInBytes())
-        rows = np.frombuffer(ptr, dtype=np.uint8).reshape(
-            image.height(), image.bytesPerLine()
-        )
-        return rows[:, : image.width() * 3].reshape(
-            image.height(), image.width(), 3
-        ).copy()
-
-    # Draw the image onto the canvas
     def draw_image(self):
-        if self.current_pixmap is None:
-            return
-        try:
-            img_array = self.pixmap_to_array(self.current_pixmap)
-            self.figure.clear()
-            self.ax = self.figure.add_subplot(111)
-            # Display image with extent [0,5] for x and [0,3] for y
-            # Replace aspect='auto' with aspect='equal' to preserve aspect ratio
-            self.ax.imshow(img_array, extent=[0, 5, 0, 3], origin='upper', aspect='equal')
-            self.ax.set_xlim(self.xlim)
-            self.ax.set_ylim(self.ylim)
-            self.ax.set_xlabel('x [mm]', fontsize=11)
-            self.ax.set_ylabel('y [mm]', fontsize=11)
-            self.figure.tight_layout()
-            self.canvas.draw_idle()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Cannot display image:\n{str(e)}")
-
-    # Mouse event handlers for panning
-    def on_mouse_press(self, event):
-        if event.button == 3 and event.inaxes:  # Right mouse button
-            self.is_panning = True
-            self.pan_start_x = event.xdata
-            self.pan_start_y = event.ydata
-            self.canvas.setCursor(Qt.CursorShape.ClosedHandCursor)
-
-    def on_mouse_release(self, event):
-        if event.button == 3:
-            self.is_panning = False
-            self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
-
-    def on_mouse_move(self, event):
-        if self.is_panning and event.inaxes and self.ax is not None:
-            dx = event.xdata - self.pan_start_x
-            dy = event.ydata - self.pan_start_y
-
-            cur_xlim = self.ax.get_xlim()
-            cur_ylim = self.ax.get_ylim()
-
-            new_xmin = cur_xlim[0] - dx
-            new_xmax = cur_xlim[1] - dx
-            new_ymin = cur_ylim[0] - dy
-            new_ymax = cur_ylim[1] - dy
-
-            # Clamp within bounds
-            if new_xmin < self.x_bound[0]:
-                offset = self.x_bound[0] - new_xmin
-                new_xmin += offset
-                new_xmax += offset
-            elif new_xmax > self.x_bound[1]:
-                offset = self.x_bound[1] - new_xmax
-                new_xmin += offset
-                new_xmax += offset
-
-            if new_ymin < self.y_bound[0]:
-                offset = self.y_bound[0] - new_ymin
-                new_ymin += offset
-                new_ymax += offset
-            elif new_ymax > self.y_bound[1]:
-                offset = self.y_bound[1] - new_ymax
-                new_ymin += offset
-                new_ymax += offset
-
-            self.xlim = (new_xmin, new_xmax)
-            self.ylim = (new_ymin, new_ymax)
-            self.ax.set_xlim(self.xlim)
-            self.ax.set_ylim(self.ylim)
-            self.canvas.draw_idle()
-
-    # Zoom handling with scroll wheel
-    def on_scroll(self, event):
-        if event.inaxes is None or self.ax is None:
-            return
-        scale_factor = 1.2 if event.button == 'up' else 1/1.2  # up = zoom in
-
-        xdata, ydata = event.xdata, event.ydata
-        xmin, xmax = self.xlim
-        ymin, ymax = self.ylim
-
-        new_xmin = xdata - (xdata - xmin) * scale_factor
-        new_xmax = xdata + (xmax - xdata) * scale_factor
-        new_ymin = ydata - (ydata - ymin) * scale_factor
-        new_ymax = ydata + (ymax - ydata) * scale_factor
-
-        new_xmin, new_xmax, new_ymin, new_ymax = self._clamp_limits(
-            new_xmin, new_xmax, new_ymin, new_ymax)
-
-        self.xlim = (new_xmin, new_xmax)
-        self.ylim = (new_ymin, new_ymax)
-        self.ax.set_xlim(self.xlim)
-        self.ax.set_ylim(self.ylim)
-        self.canvas.draw_idle()
-
-    def _clamp_limits(self, xmin, xmax, ymin, ymax):
-        """Ensure limits are within bounds and have a minimum width."""
-        xmin = max(self.x_bound[0], xmin)
-        xmax = min(self.x_bound[1], xmax)
-        ymin = max(self.y_bound[0], ymin)
-        ymax = min(self.y_bound[1], ymax)
-
-        min_range = 0.1
-        if xmax - xmin < min_range:
-            center = (xmin + xmax) / 2
-            xmin = center - min_range / 2
-            xmax = center + min_range / 2
-            xmin = max(self.x_bound[0], xmin)
-            xmax = min(self.x_bound[1], xmax)
-
-        if ymax - ymin < min_range:
-            center = (ymin + ymax) / 2
-            ymin = center - min_range / 2
-            ymax = center + min_range / 2
-            ymin = max(self.y_bound[0], ymin)
-            ymax = min(self.y_bound[1], ymax)
-
-        return xmin, xmax, ymin, ymax
+        self.canvas.set_pixmap(self.current_pixmap)
 
     def reset_zoom(self):
-        """Reset zoom to default (full image)."""
-        self.xlim = self.default_xlim
-        self.ylim = self.default_ylim
-        if self.ax is not None:
-            self.ax.set_xlim(self.xlim)
-            self.ax.set_ylim(self.ylim)
-            self.canvas.draw_idle()
+        self.canvas.reset_view()
+
+    def set_image_source(self, file_path):
+        """Decode the source only when this editor becomes visible."""
+        self._pending_image_path = file_path
+        QTimer.singleShot(0, self._load_pending_image)
+
+    def _load_pending_image(self):
+        if not self.isVisible() or not self._pending_image_path:
+            return
+        file_path = self._pending_image_path
+        self._pending_image_path = None
+        self.view_model.load_image(file_path)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._load_pending_image)
 
     @pyqtSlot()
     def on_open_clicked(self):
@@ -319,6 +171,7 @@ class ImageEditor(QWidget):
                 # Emit signal requesting to open video
                 self.sig_open_video.emit(self.property("project_name"), file_path)
             else:
+                self._pending_image_path = None
                 self.view_model.load_image(file_path)
 
     @pyqtSlot()
@@ -334,7 +187,10 @@ class ImageEditor(QWidget):
         )
 
         if file_path:
-            self.view_model.save_image(file_path)
+            self.view_model.save_image(
+                file_path,
+                self.current_pixmap.toImage(),
+            )
 
     @pyqtSlot()
     def on_calibration_clicked(self):
@@ -388,25 +244,14 @@ class ImageEditor(QWidget):
             self.droplet_windows.remove(window)
         self._maybe_emit_close_ready()
 
-    @pyqtSlot(QPixmap)
-    def on_image_loaded(self, pixmap):
-        self.current_pixmap = pixmap
-        # Draw the image on the canvas instead of QLabel
+    @pyqtSlot(QImage)
+    def on_image_loaded(self, image):
+        self.current_pixmap = QPixmap.fromImage(image)
         self.draw_image()
-        # Reset zoom to default when loading a new image
-        self.reset_zoom()
-
-    def resizeEvent(self, event):
-        """Adjust figure layout when the window is resized to avoid label clipping."""
-        super().resizeEvent(event)
-        if self.current_pixmap is not None:
-            # Update tight_layout to display margins and labels correctly
-            self.figure.tight_layout()
-            self.canvas.draw_idle()
 
     def load_image_from_file(self, file_path):
         """Public method to load image, used by drag and drop."""
-        self.view_model.load_image(file_path)
+        self.set_image_source(file_path)
 
     def closeEvent(self, event):
         """Close all Droplet Analysis windows when this editor closes."""
@@ -430,10 +275,7 @@ class ImageEditor(QWidget):
             return
 
         self.droplet_windows.clear()
-        for connection_id in self._mpl_connection_ids:
-            self.canvas.mpl_disconnect(connection_id)
-        self._mpl_connection_ids.clear()
-        self.figure.clear()
+        self.canvas.clear()
         self.current_pixmap = None
         if hasattr(self.view_model, "close"):
             self.view_model.close()

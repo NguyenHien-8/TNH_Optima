@@ -16,6 +16,7 @@ class SessionManager:
     SESSION_KEY_EXPANDED_PATHS = "expanded_paths"
     SESSION_KEY_OPENED_ITEMS = "opened_items"
     SESSION_KEY_SIDEBAR_ORDER = "sidebar_order"
+    SESSION_KEY_HIDDEN_MEDIA_PATHS = "hidden_media_paths"
 
     def __init__(self, repo: SessionRepository):
         self.repo = repo
@@ -24,6 +25,7 @@ class SessionManager:
         self._expanded_paths: List[str] = []
         self._opened_items_serializable: Dict[str, List[str]] = {}
         self._sidebar_order = {"projects": [], "items": {}}
+        self._hidden_media_paths: List[str] = []
 
     # --- Projects ---
     def set_open_projects(self, project_paths: List[str]):
@@ -161,6 +163,25 @@ class SessionManager:
         )
         return self.get_sidebar_order()
 
+    # --- Media files removed from the Sidebar but kept on disk ---
+    def set_hidden_media_paths(self, paths):
+        self._hidden_media_paths = self._unique_nonempty_strings(paths)
+
+    def get_hidden_media_paths(self):
+        return list(self._hidden_media_paths)
+
+    def save_hidden_media_paths(self):
+        self.repo.save_session(
+            self.SESSION_KEY_HIDDEN_MEDIA_PATHS,
+            self._hidden_media_paths,
+        )
+
+    def load_hidden_media_paths(self):
+        self.set_hidden_media_paths(
+            self.repo.load_session(self.SESSION_KEY_HIDDEN_MEDIA_PATHS)
+        )
+        return self.get_hidden_media_paths()
+
     # --- Combined save/load ---
     def save_all(self):
         self.save_projects()
@@ -168,6 +189,7 @@ class SessionManager:
         self.save_expanded_paths()
         self.save_opened_items()
         self.save_sidebar_order()
+        self.save_hidden_media_paths()
 
     def load_all(self):
         self.load_projects()
@@ -175,3 +197,4 @@ class SessionManager:
         self.load_expanded_paths()
         self.load_opened_items()
         self.load_sidebar_order()
+        self.load_hidden_media_paths()

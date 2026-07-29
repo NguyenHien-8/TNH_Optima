@@ -100,6 +100,75 @@ def configure_secondary_window(window, owner, show_in_taskbar=True):
     return True
 
 
+def fit_window_to_available_screen(
+    window,
+    preferred_size,
+    anchor=None,
+    width_ratio=0.92,
+    height_ratio=0.88,
+    minimum_size=(480, 320),
+):
+    """Size and center a top-level window inside the current screen work area."""
+    if window is None:
+        return None
+
+    try:
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtGui import QGuiApplication
+
+        screen = None
+        if anchor is not None:
+            try:
+                visual_anchor = anchor.window()
+            except (AttributeError, RuntimeError):
+                visual_anchor = anchor
+            screen_getter = getattr(visual_anchor, "screen", None)
+            if callable(screen_getter):
+                screen = screen_getter()
+        owner = resolve_window_owner(anchor)
+        if screen is None and owner is not None:
+            screen_getter = getattr(owner, "screen", None)
+            if callable(screen_getter):
+                screen = screen_getter()
+        if screen is None:
+            screen_getter = getattr(window, "screen", None)
+            if callable(screen_getter):
+                screen = screen_getter()
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return None
+
+        available = screen.availableGeometry()
+        preferred_width, preferred_height = preferred_size
+        minimum_width, minimum_height = minimum_size
+        maximum_width = max(1, int(available.width() * width_ratio))
+        maximum_height = max(1, int(available.height() * height_ratio))
+        target_width = max(
+            1,
+            min(int(preferred_width), maximum_width),
+        )
+        target_height = max(
+            1,
+            min(int(preferred_height), maximum_height),
+        )
+
+        window.setMinimumSize(
+            min(int(minimum_width), target_width),
+            min(int(minimum_height), target_height),
+        )
+        target_size = QSize(target_width, target_height)
+        window.resize(target_size)
+        window.move(
+            available.x() + (available.width() - target_width) // 2,
+            available.y() + (available.height() - target_height) // 2,
+        )
+        return target_size
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        logger.exception("Could not fit a window to the available screen.")
+        return None
+
+
 # Compatibility for callers outside this package. The policy is no longer
 # native ownership; new code should use configure_secondary_window.
 configure_owned_window = configure_secondary_window

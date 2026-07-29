@@ -4,11 +4,11 @@
 # Email: trannguyenhien29085@gmail.com
 #############################################################################
 from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QImageReader
 from App.Presentation.ViewModels.Workers import FunctionWorker
 
 class ImageEditorViewModel(QObject):
-    image_loaded = pyqtSignal(QPixmap)
+    image_loaded = pyqtSignal(QImage)
     error_occurred = pyqtSignal(str)
     workers_idle = pyqtSignal()
     loading_changed = pyqtSignal(str, bool)
@@ -18,31 +18,49 @@ class ImageEditorViewModel(QObject):
         self.project_name = project_name
         self.item_name = item_name
         self.current_image_path = None
-        self.current_pixmap = None
         self._workers = set()
+        self._load_workers = set()
+        self._load_generation = 0
 
     def load_image(self, file_path):
         if not isinstance(file_path, str) or not file_path:
             self.error_occurred.emit("Invalid image path.")
             return
+        self._load_generation += 1
+        generation = self._load_generation
+        for worker in list(self._load_workers):
+            if worker.isRunning():
+                worker.requestInterruption()
         self._start_worker(
-            lambda: QImage(file_path),
-            lambda image: self._on_image_decoded(file_path, image),
+            lambda: self._decode_image(file_path),
+            lambda image: self._on_image_decoded(
+                generation,
+                file_path,
+                image,
+            ),
             track_loading=True,
+            is_image_load=True,
         )
 
-    def _on_image_decoded(self, file_path, image):
+    @staticmethod
+    def _decode_image(file_path):
+        reader = QImageReader(file_path)
+        reader.setAutoTransform(True)
+        return reader.read()
+
+    def _on_image_decoded(self, generation, file_path, image):
+        if generation != self._load_generation:
+            return
         if image.isNull():
             self.error_occurred.emit(f"Cannot load image: {file_path}")
             return
         self.current_image_path = file_path
-        self.current_pixmap = QPixmap.fromImage(image)
-        self.image_loaded.emit(self.current_pixmap)
+        self.image_loaded.emit(image)
 
-    def save_image(self, file_path):
-        """Save the current pixmap to the given file path."""
-        if self.current_pixmap and not self.current_pixmap.isNull():
-            image = self.current_pixmap.toImage()
+    def save_image(self, file_path, image):
+        """Save the current image to the given file path."""
+        if isinstance(image, QImage) and not image.isNull():
+            image = image.copy()
 
             def on_saved(success):
                 if not success:
@@ -52,9 +70,17 @@ class ImageEditorViewModel(QObject):
         else:
             self.error_occurred.emit("No image loaded to save.")
 
-    def _start_worker(self, function, callback, track_loading=False):
+    def _start_worker(
+        self,
+        function,
+        callback,
+        track_loading=False,
+        is_image_load=False,
+    ):
         worker = FunctionWorker(function)
         self._workers.add(worker)
+        if is_image_load:
+            self._load_workers.add(worker)
         if track_loading:
             loading_token = f"image-worker:{id(worker)}"
             self.loading_changed.emit(loading_token, True)
@@ -72,6 +98,7 @@ class ImageEditorViewModel(QObject):
 
     def _finish_worker(self, worker):
         self._workers.discard(worker)
+        self._load_workers.discard(worker)
         if not any(item.isRunning() for item in self._workers):
             self.workers_idle.emit()
 
@@ -79,6 +106,7 @@ class ImageEditorViewModel(QObject):
         self.request_shutdown()
 
     def request_shutdown(self):
+        self._load_generation += 1
         for worker in list(self._workers):
             if worker.isRunning():
                 worker.requestInterruption()

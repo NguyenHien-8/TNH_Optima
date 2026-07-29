@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QThread, Qt
 from PyQt6.QtGui import QImage
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtTest import QSignalSpy, QTest
@@ -48,7 +48,10 @@ class VideoEditorCaptureTests(unittest.TestCase):
     def _wait_for_workers(self, editor, timeout_seconds=5):
         deadline = time.monotonic() + timeout_seconds
         while (
-            any(worker.isRunning() for worker in editor._workers)
+            (
+                any(worker.isRunning() for worker in editor._workers)
+                or editor.view_model.has_running_workers()
+            )
             and time.monotonic() < deadline
         ):
             self.app.processEvents()
@@ -58,15 +61,21 @@ class VideoEditorCaptureTests(unittest.TestCase):
             any(worker.isRunning() for worker in editor._workers),
             "Video capture worker did not finish",
         )
+        self.assertFalse(editor.view_model.has_running_workers())
+
+    def _wait_until(self, predicate, timeout_seconds=5):
+        deadline = time.monotonic() + timeout_seconds
+        while not predicate() and time.monotonic() < deadline:
+            self.app.processEvents()
+            QTest.qWait(10)
+        self.app.processEvents()
+        self.assertTrue(predicate(), "Timed out waiting for video state")
 
     def test_opened_video_is_paused_and_has_no_decoder_source(self):
         editor = VideoEditor(str(self.video_file))
 
-        self.assertEqual(
-            editor.media_player.playbackState(),
-            QMediaPlayer.PlaybackState.StoppedState,
-        )
-        self.assertTrue(editor.media_player.source().isEmpty())
+        self.assertIsNone(editor._media_player)
+        self.assertIsNone(editor.video_widget)
         self.assertFalse(editor.is_media_loading())
         self.assertEqual(editor.btn_play.toolTip(), "Play")
         editor.close()
@@ -79,14 +88,10 @@ class VideoEditorCaptureTests(unittest.TestCase):
             editors.append(VideoEditor(str(video_path)))
 
         self.assertTrue(
-            all(editor.media_player.source().isEmpty() for editor in editors)
+            all(editor._media_player is None for editor in editors)
         )
         self.assertTrue(
-            all(
-                editor.media_player.playbackState()
-                == QMediaPlayer.PlaybackState.StoppedState
-                for editor in editors
-            )
+            all(editor.video_widget is None for editor in editors)
         )
         self.assertTrue(
             all(not editor.is_media_loading() for editor in editors)
@@ -100,14 +105,41 @@ class VideoEditorCaptureTests(unittest.TestCase):
         media_load_started = QSignalSpy(editor.media_load_started)
 
         editor.toggle_play()
+        self._wait_until(
+            lambda: editor._media_player is not None
+            and not editor._media_player.source().isEmpty()
+        )
 
         self.assertEqual(len(playback_requested), 1)
         self.assertEqual(len(media_load_started), 1)
-        self.assertFalse(editor.media_player.source().isEmpty())
+        self.assertFalse(editor._media_player.source().isEmpty())
         self.assertEqual(
-            os.path.normcase(editor.media_player.source().toLocalFile()),
+            os.path.normcase(editor._media_player.source().toLocalFile()),
             os.path.normcase(str(self.video_file)),
         )
+        self._wait_for_workers(editor)
+        editor.close()
+
+    def test_video_source_validation_runs_outside_gui_thread(self):
+        editor = VideoEditor(str(self.video_file))
+        gui_thread_id = int(QThread.currentThreadId())
+        validation_thread_ids = []
+        original_inspect = editor.view_model._inspect_source
+
+        def inspect_source(file_path):
+            validation_thread_ids.append(int(QThread.currentThreadId()))
+            return original_inspect(file_path)
+
+        with patch.object(
+            editor.view_model,
+            "_inspect_source",
+            side_effect=inspect_source,
+        ):
+            editor.toggle_play()
+            self._wait_until(lambda: bool(validation_thread_ids))
+            self._wait_for_workers(editor)
+
+        self.assertNotEqual(validation_thread_ids[0], gui_thread_id)
         editor.close()
 
     def test_releasing_inactive_video_preserves_lazy_resume_state(self):
@@ -115,12 +147,17 @@ class VideoEditorCaptureTests(unittest.TestCase):
         editor.toggle_play()
 
         editor.pause_playback(release_resources=True)
+        self._wait_for_workers(editor)
 
-        self.assertTrue(editor.media_player.source().isEmpty())
-        self.assertEqual(
-            editor.media_player.playbackState(),
-            QMediaPlayer.PlaybackState.StoppedState,
+        self.assertTrue(
+            editor._media_player is None
+            or editor._media_player.source().isEmpty()
         )
+        if editor._media_player is not None:
+            self.assertEqual(
+                editor._media_player.playbackState(),
+                QMediaPlayer.PlaybackState.StoppedState,
+            )
         self.assertEqual(editor.btn_play.toolTip(), "Play")
         editor.close()
 
@@ -150,6 +187,18 @@ class VideoEditorCaptureTests(unittest.TestCase):
         first.close()
         second.close()
         tabs.close()
+
+    def test_session_restore_yields_between_editor_tabs(self):
+        calls = []
+        host = SimpleNamespace(
+            restoring_in_progress=True,
+            _process_next_pending_editor=lambda: calls.append("next"),
+        )
+
+        MainView._continue_session_restore(host)
+
+        self.assertFalse(calls)
+        self._wait_until(lambda: calls == ["next"])
 
     def test_project_video_capture_repairs_image_folder(self):
         editor = VideoEditor(

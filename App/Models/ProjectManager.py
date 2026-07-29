@@ -16,6 +16,10 @@ from App.Infrastructure.Helpers.PathHelper import (
     relative_path_within,
     user_documents_path,
 )
+from App.Infrastructure.Helpers.RecycleBinHelper import (
+    move_to_recycle_bin,
+)
+from App.Infrastructure.Helpers.MediaHelper import get_media_extensions
 
 
 def _synchronized(method):
@@ -153,15 +157,21 @@ class ProjectManager:
             return False, str(e)
 
     @_synchronized
-    def delete_project(self, project_name):
+    def delete_project(self, project_name, recycle=True):
         full_path = self._get_project_root(project_name)
         if full_path and os.path.exists(full_path):
             try:
-                shutil.rmtree(full_path)
+                if recycle:
+                    move_to_recycle_bin(full_path)
+                    message = "Project moved to Recycle Bin successfully"
+                else:
+                    shutil.rmtree(full_path)
+                    message = "Project deleted successfully"
                 self._cleanup_dict(project_name)
-                return True, "Deleted"
+                return True, message
             except Exception as e:
-                return False, str(e)
+                action = "Move to Recycle Bin" if recycle else "Delete"
+                return False, f"{action} failed: {str(e)}"
         return False, "Project path not found"
     
     @_synchronized
@@ -259,7 +269,7 @@ class ProjectManager:
             return False, str(e)
 
     @_synchronized
-    def delete_item(self, project_name, folder_name):
+    def delete_item(self, project_name, folder_name, recycle=True):
         if not self._is_valid_name(folder_name):
             return False, "Invalid item name"
         project_path = self._get_project_root(project_name)
@@ -267,12 +277,18 @@ class ProjectManager:
             full_path = os.path.join(project_path, folder_name)
             if os.path.exists(full_path):
                 try:
-                    shutil.rmtree(full_path)
+                    if recycle:
+                        move_to_recycle_bin(full_path)
+                        message = "Item moved to Recycle Bin successfully"
+                    else:
+                        shutil.rmtree(full_path)
+                        message = "Item deleted successfully"
                     if project_name in self.item_states and folder_name in self.item_states[project_name]:
                         del self.item_states[project_name][folder_name]
-                    return True, "Deleted"
+                    return True, message
                 except Exception as e:
-                    return False, str(e)
+                    action = "Move to Recycle Bin" if recycle else "Delete"
+                    return False, f"{action} failed: {str(e)}"
         return False, "Item not found"
 
     @_synchronized
@@ -386,7 +402,11 @@ class ProjectManager:
         success, msg, new_name = self.copy_item_structure(src_project_name, src_folder_name, target_project_name)
 
         if success:
-            del_success, del_msg = self.delete_item(src_project_name, src_folder_name)
+            del_success, del_msg = self.delete_item(
+                src_project_name,
+                src_folder_name,
+                recycle=False,
+            )
             if not del_success:
                 return False, f"Moved but failed to cleanup source: {del_msg}", new_name
             return True, "Moved Successfully", new_name
@@ -408,6 +428,52 @@ class ProjectManager:
             return os.path.join(item_path, media_type)
 
         return None
+
+    @classmethod
+    def get_media_extensions(cls, media_type):
+        return get_media_extensions(media_type)
+
+    @_synchronized
+    def validate_media_file_for_open(
+        self,
+        project_name,
+        item_name,
+        media_type,
+        file_path,
+    ):
+        media_path = canonical_path(
+            self._get_media_path(project_name, item_name, media_type)
+        )
+        selected_path = canonical_path(file_path)
+        if media_path is None:
+            return False, "Project/item media folder not found", "", ""
+        if selected_path is None or not os.path.isfile(selected_path):
+            return False, "Selected media file not found", "", ""
+        if (
+            os.path.normcase(os.path.dirname(selected_path))
+            != os.path.normcase(media_path)
+        ):
+            return (
+                False,
+                f"Select a file directly inside the item's {media_type} folder.",
+                "",
+                "",
+            )
+
+        extension = os.path.splitext(selected_path)[1].lower()
+        if extension not in self.get_media_extensions(media_type):
+            return (
+                False,
+                f"Unsupported {media_type.lower()} file type: {extension}",
+                "",
+                "",
+            )
+        return (
+            True,
+            f"{media_type} file ready",
+            os.path.basename(selected_path),
+            selected_path,
+        )
 
     @_synchronized
     def copy_file(self, src_project, src_item, src_media, src_file,
@@ -454,7 +520,13 @@ class ProjectManager:
             dst_project, dst_item, dst_media, new_name
         )
         if success:
-            del_success, del_msg = self.delete_file(src_project, src_item, src_media, src_file)
+            del_success, del_msg = self.delete_file(
+                src_project,
+                src_item,
+                src_media,
+                src_file,
+                recycle=False,
+            )
             if not del_success:
                 return False, f"Moved but failed to delete source: {del_msg}", new_file_name
             return True, "File moved successfully", new_file_name
@@ -484,7 +556,14 @@ class ProjectManager:
             return False, f"Rename failed: {str(e)}"
 
     @_synchronized
-    def delete_file(self, project_name, item_name, media_type, file_name):
+    def delete_file(
+        self,
+        project_name,
+        item_name,
+        media_type,
+        file_name,
+        recycle=True,
+    ):
         if not self._is_valid_name(file_name):
             return False, "Invalid file name"
         media_path = self._get_media_path(project_name, item_name, media_type)
@@ -496,10 +575,14 @@ class ProjectManager:
             return False, f"File '{file_name}' not found"
 
         try:
+            if recycle:
+                move_to_recycle_bin(file_path)
+                return True, "File moved to Recycle Bin successfully"
             os.remove(file_path)
             return True, "File deleted successfully"
         except Exception as e:
-            return False, f"Delete failed: {str(e)}"
+            action = "Move to Recycle Bin" if recycle else "Delete"
+            return False, f"{action} failed: {str(e)}"
 
     @_synchronized
     def open_item(self, project_name, folder_path):

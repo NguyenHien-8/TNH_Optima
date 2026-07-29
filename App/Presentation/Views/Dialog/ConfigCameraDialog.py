@@ -13,13 +13,17 @@ from App.Presentation.ViewModels.DialogViewModel.ConfigCameraViewModel import Co
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
 
 class ConfigCameraDialog(QDialog):
-    def __init__(self, camera_manager, parent=None, has_open_editors=False):
+    def __init__(self, camera_view_model, parent=None, has_open_editors=False):
         super().__init__(parent)
         self.setWindowTitle("Camera Configuration")
         self.setFixedSize(430, 230)
 
         self.has_open_editors = has_open_editors
-        self.view_model = ConfigCameraViewModel(camera_manager)
+        self.view_model = (
+            camera_view_model
+            if isinstance(camera_view_model, ConfigCameraViewModel)
+            else ConfigCameraViewModel(camera_view_model)
+        )
         self._connect_view_model_signals()
 
         self.load_camera_dialog_style()

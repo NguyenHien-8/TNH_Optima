@@ -75,7 +75,6 @@ class ImageCaptureManager:
     def __init__(self, item_path):
         self.item_path = item_path
         self.image_folder = os.path.join(item_path, "Image")
-        FolderManager.ensure_folder_exists(self.image_folder)
 
     def capture_image(self, qimage):
         """

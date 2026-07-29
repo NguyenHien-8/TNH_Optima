@@ -79,7 +79,7 @@ class FileEditorViewModel(QObject):
         - If currently recording, do not switch target.
         - If target is unchanged, do nothing.
         """
-        if not item_path or not os.path.isdir(item_path):
+        if not item_path:
             self.error_occurred.emit("Invalid item path for FileEditor storage.")
             return False
 

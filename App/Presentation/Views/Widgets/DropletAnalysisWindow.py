@@ -5,7 +5,6 @@
 ###############################################################
 import os
 import numpy as np
-from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -22,13 +21,12 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Arc, FancyArrowPatch, Rectangle
 
-from App.Models.Analysis.AnalysisManager import AnalysisManager
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet, resource_path
 from App.Infrastructure.Helpers.WindowOwnershipHelper import (
     configure_secondary_window,
+    fit_window_to_available_screen,
     resolve_window_owner,
 )
-from App.Presentation.ViewModels.Workers import FunctionWorker
 
 
 class DropletAnalysisWindow(QMainWindow):
@@ -81,12 +79,12 @@ class DropletAnalysisWindow(QMainWindow):
         super().__init__(None, Qt.WindowType.Window)
         DropletAnalysisWindow._instances.append(self)
 
+        self.screen_anchor = parent
         self.main_view = resolve_window_owner(parent)
         self.view_model = view_model
         self.input_pixmap = pixmap
-        self.analysis_manager = AnalysisManager()
-        self._analysis_workers = set()
         self._close_when_idle = False
+        self._screen_fit_applied = False
 
         # ===== Auto-save context =====
         self.source_image_path = source_image_path
@@ -101,9 +99,6 @@ class DropletAnalysisWindow(QMainWindow):
                 item_name=item_name,
             )
         )
-        self.resize(1100, 760)
-        self.setMinimumSize(700, 500)
-
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("DropletAnalysisWindow")
@@ -111,7 +106,19 @@ class DropletAnalysisWindow(QMainWindow):
         self.view_model.image_loaded.connect(self.on_image_loaded)
         self.view_model.image_data_ready.connect(self.view_model.perform_analysis)
         self.view_model.analysis_completed.connect(self.on_analysis_completed)
+        self.view_model.baseline_completed.connect(self._on_baseline_completed)
+        self.view_model.edges_detected.connect(self._on_edges_detected)
+        self.view_model.droplet_analysis_completed.connect(
+            self._on_droplet_analysis_finished
+        )
+        self.view_model.save_completed.connect(self._on_save_completed)
+        self.view_model.operation_failed.connect(self._on_operation_failed)
+        self.view_model.workers_idle.connect(self._on_workers_idle)
         self.view_model.error_occurred.connect(self.on_error)
+        self.view_model.configure_storage_context(
+            source_image_path=source_image_path,
+            item_path=item_path,
+        )
 
         self.default_xlim = (0.0, 5.0)
         self.default_ylim = (0.0, 3.0)
@@ -192,7 +199,7 @@ class DropletAnalysisWindow(QMainWindow):
             self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move),
         ]
 
-        self.view_model.load_image_from_pixmap(self.input_pixmap)
+        self.view_model.load_image(self.input_pixmap.toImage())
 
     @staticmethod
     def build_window_title(
@@ -222,6 +229,20 @@ class DropletAnalysisWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self._screen_fit_applied:
+            fit_window_to_available_screen(
+                self,
+                preferred_size=(1100, 760),
+                anchor=(
+                    self.screen_anchor
+                    if self.screen_anchor is not None
+                    else self.main_view
+                ),
+                width_ratio=0.94,
+                height_ratio=0.90,
+                minimum_size=(640, 420),
+            )
+            self._screen_fit_applied = True
         configure_secondary_window(self, self.main_view)
 
     # =========================
@@ -472,8 +493,8 @@ class DropletAnalysisWindow(QMainWindow):
     # =========================
     # slots
     # =========================
-    @pyqtSlot(QPixmap)
-    def on_image_loaded(self, pixmap):
+    @pyqtSlot()
+    def on_image_loaded(self):
         self.update_info_text("Image loaded successfully.")
 
     @pyqtSlot(object)
@@ -486,106 +507,6 @@ class DropletAnalysisWindow(QMainWindow):
     def on_error(self, message):
         QMessageBox.critical(self, "Analysis Error", message)
         self.update_info_text(f"Error: {message}")
-
-    # =========================
-    # auto-save path helpers
-    # =========================
-    def _resolve_source_path_from_parent(self):
-        parent = self.parent()
-
-        if parent is not None and hasattr(parent, "property"):
-            full_path = parent.property("full_path")
-            if isinstance(full_path, str) and full_path.strip():
-                return full_path
-
-        temp = parent
-        visited = set()
-        while temp is not None and id(temp) not in visited:
-            visited.add(id(temp))
-            if hasattr(temp, "property"):
-                full_path = temp.property("full_path")
-                if isinstance(full_path, str) and full_path.strip():
-                    return full_path
-            temp = temp.parent()
-
-        return None
-
-    def _resolve_item_path(self):
-        if isinstance(self.item_path, str) and self.item_path.strip():
-            norm_item = os.path.normpath(self.item_path)
-            if os.path.isdir(norm_item):
-                return norm_item
-
-        candidate_source = None
-        if isinstance(self.source_image_path, str) and self.source_image_path.strip():
-            candidate_source = self.source_image_path
-        else:
-            candidate_source = self._resolve_source_path_from_parent()
-
-        if not candidate_source:
-            return None
-
-        candidate_source = os.path.normpath(candidate_source)
-
-        if os.path.isfile(candidate_source):
-            parent_dir = os.path.dirname(candidate_source)
-            parent_name = os.path.basename(parent_dir).lower()
-
-            if parent_name == "image":
-                item_root = os.path.dirname(parent_dir)
-                if os.path.isdir(item_root):
-                    return item_root
-
-            if parent_name == "video":
-                item_root = os.path.dirname(parent_dir)
-                if os.path.isdir(item_root):
-                    return item_root
-
-            if os.path.isdir(parent_dir):
-                return parent_dir
-
-        elif os.path.isdir(candidate_source):
-            return candidate_source
-
-        return None
-
-    def _get_analysis_save_dir(self):
-        item_root = self._resolve_item_path()
-        if not item_root:
-            return None
-
-        image_dir = os.path.join(item_root, "Image")
-        os.makedirs(image_dir, exist_ok=True)
-        return image_dir
-
-    def _get_source_base_name(self):
-        candidate_source = None
-        if isinstance(self.source_image_path, str) and self.source_image_path.strip():
-            candidate_source = self.source_image_path
-        else:
-            candidate_source = self._resolve_source_path_from_parent()
-
-        if candidate_source and os.path.isfile(candidate_source):
-            return os.path.splitext(os.path.basename(candidate_source))[0]
-
-        return "analysis_result"
-
-    def _build_unique_save_path(self, save_dir):
-        base_name = self._get_source_base_name()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f"{base_name}_{timestamp}.png"
-        file_path = os.path.join(save_dir, file_name)
-
-        if not os.path.exists(file_path):
-            return file_path
-
-        index = 1
-        while True:
-            file_name = f"{base_name}_{timestamp}_{index}.png"
-            file_path = os.path.join(save_dir, file_name)
-            if not os.path.exists(file_path):
-                return file_path
-            index += 1
 
     # =========================
     # display helpers
@@ -618,11 +539,11 @@ class DropletAnalysisWindow(QMainWindow):
             self.ax = self.figure.add_subplot(111)
 
             if self.show_original:
-                if self.view_model.image_array is None:
+                img = self.view_model.get_original_display_data()
+                if img is None:
                     self.update_info_text("No original image available.")
                     return
 
-                img = self.view_model.image_array
                 extent = self._get_image_extent()
                 self.ax.imshow(
                     img,
@@ -1253,27 +1174,14 @@ class DropletAnalysisWindow(QMainWindow):
                     self._clear_baseline_points_artists()
                 else:
                     points = self.baseline_points[:2]
-                    coeffs = self.analysis_manager.compute_baseline(method, points=points)
-                    if coeffs is None:
-                        QMessageBox.critical(
-                            self, "Error",
-                            "Cannot compute baseline from the selected points."
-                        )
-                        self.baseline_points.clear()
-                        self._clear_baseline_points_artists()
-                    else:
-                        self.baseline_coeffs = coeffs
-                        self.baseline_anchor_points = points
-                        self._draw_baseline()
-                        self.baseline_points.clear()
-                        self._clear_baseline_points_artists()
-                        a, b, c = coeffs
-                        self.update_info_text(
-                            f"Baseline computed: {a:.3f}x + {b:.3f}y + {c:.3f} = 0"
-                        )
+                    self.baseline_anchor_points = list(points)
+                    self.baseline_points.clear()
+                    self._clear_baseline_points_artists()
+                    self.update_info_text("Computing baseline...")
+                    self.view_model.compute_baseline(method, points)
 
             elif method == "Mirror Image Method":
-                if not self.analysis_manager.is_mirror_method_available():
+                if not self.view_model.is_mirror_method_available():
                     QMessageBox.information(
                         self, "Under Development",
                         "Mirror Image Method is currently under development."
@@ -1285,6 +1193,27 @@ class DropletAnalysisWindow(QMainWindow):
                 self._clear_baseline_points_artists()
 
             self.canvas.draw_idle()
+
+    @pyqtSlot(str, object)
+    def _on_baseline_completed(self, method, coeffs):
+        if method != "Double Points":
+            return
+        if coeffs is None:
+            self.baseline_anchor_points = None
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Cannot compute baseline from the selected points.",
+            )
+            return
+
+        self.baseline_coeffs = coeffs
+        self._draw_baseline()
+        a, b, c = coeffs
+        self.update_info_text(
+            f"Baseline computed: {a:.3f}x + {b:.3f}y + {c:.3f} = 0"
+        )
+        self.canvas.draw_idle()
 
     @pyqtSlot(bool)
     def on_measure_toggled(self, checked):
@@ -1302,7 +1231,7 @@ class DropletAnalysisWindow(QMainWindow):
 
     @pyqtSlot()
     def on_auto_detect_clicked(self):
-        if self.view_model.image_array is None:
+        if not self.view_model.has_image():
             QMessageBox.warning(self, "No Image", "No image loaded.")
             return
         if self.baseline_coeffs is None:
@@ -1321,19 +1250,6 @@ class DropletAnalysisWindow(QMainWindow):
         if not ok:
             return
 
-        def detect_edges():
-            from App.Models.Analysis.DropletAnalysis import auto_detect_edge_points
-
-            return auto_detect_edge_points(
-                image_array,
-                num_points,
-                physical_width=5.0,
-                physical_height=3.0,
-                baseline_coeffs=baseline_coeffs,
-                baseline_anchor_points=baseline_anchor_points,
-            )
-
-        image_array = self.view_model.image_array.copy()
         baseline_coeffs = tuple(self.baseline_coeffs)
         baseline_anchor_points = (
             tuple(tuple(point) for point in self.baseline_anchor_points)
@@ -1342,7 +1258,11 @@ class DropletAnalysisWindow(QMainWindow):
         )
         self.btn_auto_detect.setEnabled(False)
         self.update_info_text("Detecting droplet edge...")
-        self._start_analysis_worker(detect_edges, self._on_edges_detected)
+        self.view_model.auto_detect_edges(
+            num_points,
+            baseline_coeffs,
+            baseline_anchor_points,
+        )
 
     def _on_edges_detected(self, new_points):
         self.btn_auto_detect.setEnabled(True)
@@ -1356,25 +1276,6 @@ class DropletAnalysisWindow(QMainWindow):
             f"Auto detected {len(new_points)} droplet-edge points "
             "above the baseline."
         )
-
-    def _start_analysis_worker(self, function, callback):
-        worker = FunctionWorker(function)
-        self._analysis_workers.add(worker)
-        worker.result_ready.connect(callback)
-        worker.error_occurred.connect(self._on_analysis_worker_error)
-        worker.finished.connect(lambda: self._finish_analysis_worker(worker))
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
-
-    def _finish_analysis_worker(self, worker):
-        self._analysis_workers.discard(worker)
-        if self._close_when_idle and not self._analysis_workers:
-            QTimer.singleShot(0, self.close)
-
-    def _on_analysis_worker_error(self, message):
-        self.btn_auto_detect.setEnabled(True)
-        self.btn_analysis_manually.setEnabled(True)
-        QMessageBox.critical(self, "Analysis Error", message)
 
     def on_mouse_press(self, event):
         if event.button == 3 and self.is_measuring and event.inaxes:
@@ -1667,52 +1568,25 @@ Display:
 
     @pyqtSlot()
     def on_save_clicked(self):
-        """
-        Auto-save analysis result directly into:
-            <current_item>/Image/
-
-        No file dialog.
-        Saved image has no black border.
-        """
-        save_dir = self._get_analysis_save_dir()
-        if not save_dir:
-            QMessageBox.warning(
-                self,
-                "Save Failed",
-                "Cannot determine the current item's Image folder automatically."
-            )
-            return
-
-        file_path = self._build_unique_save_path(save_dir)
-
+        """Render on the GUI thread, then encode and write in the ViewModel."""
         try:
             original_figure_facecolor = self.figure.get_facecolor()
             original_ax_facecolor = self.ax.get_facecolor() if self.ax is not None else None
 
-            # Temporarily switch export background to white to remove black border
             self.figure.set_facecolor("white")
             if self.ax is not None:
                 self.ax.set_facecolor("white")
-
-            self.figure.savefig(
-                file_path,
-                dpi=180,
-                bbox_inches='tight',
-                pad_inches=0,
-                facecolor="white",
-                edgecolor="white"
-            )
-
-            # Restore on-screen appearance
+            self.canvas.draw()
+            rendered_image = self.canvas.grab().toImage()
             self.figure.set_facecolor(original_figure_facecolor)
             if self.ax is not None and original_ax_facecolor is not None:
                 self.ax.set_facecolor(original_ax_facecolor)
-
             self.canvas.draw_idle()
-            QMessageBox.information(self, "Success", f"Saved to:\n{file_path}")
-
+            self.btn_save.setEnabled(False)
+            self.update_info_text("Saving analysis image...")
+            if not self.view_model.save_rendered_image(rendered_image):
+                self.btn_save.setEnabled(True)
         except Exception as e:
-            # best-effort restore
             try:
                 self.figure.set_facecolor("#111111")
                 if self.ax is not None:
@@ -1725,6 +1599,21 @@ Display:
                 pass
 
             QMessageBox.critical(self, "Save Failed", f"Could not save file:\n{str(e)}")
+
+    @pyqtSlot(str)
+    def _on_save_completed(self, file_path):
+        self.btn_save.setEnabled(True)
+        QMessageBox.information(self, "Success", f"Saved to:\n{file_path}")
+        self.update_info_text(f"Analysis image saved to:\n{file_path}")
+
+    @pyqtSlot(str, str)
+    def _on_operation_failed(self, operation, message):
+        if operation == "save":
+            self.btn_save.setEnabled(True)
+        elif operation == "edge_detection":
+            self.btn_auto_detect.setEnabled(True)
+        elif operation == "droplet_analysis":
+            self.btn_analysis_manually.setEnabled(True)
 
     @pyqtSlot()
     def on_analysis_manually_clicked(self):
@@ -1747,15 +1636,13 @@ Display:
         measurement_points = list(self.measurement_points)
         self.btn_analysis_manually.setEnabled(False)
         self.update_info_text(f"Running {analysis_method}...")
-        self._start_analysis_worker(
-            lambda: self.analysis_manager.analyze_droplet(
-                analysis_method, baseline_coeffs, measurement_points
-            ),
-            lambda results: self._on_droplet_analysis_finished(
-                analysis_method, results
-            ),
+        self.view_model.analyze_droplet(
+            analysis_method,
+            baseline_coeffs,
+            measurement_points,
         )
 
+    @pyqtSlot(str, object)
     def _on_droplet_analysis_finished(self, analysis_method, results):
         self.btn_analysis_manually.setEnabled(True)
         if results is None:
@@ -1837,13 +1724,8 @@ Display:
     # lifecycle
     # =========================
     def closeEvent(self, event):
-        running_workers = [
-            worker for worker in self._analysis_workers if worker.isRunning()
-        ]
-        if running_workers:
+        if not self.view_model.request_close():
             self._close_when_idle = True
-            for worker in running_workers:
-                worker.requestInterruption()
             self.update_info_text("Waiting for analysis to finish before closing...")
             event.ignore()
             return
@@ -1856,6 +1738,12 @@ Display:
         if self in DropletAnalysisWindow._instances:
             DropletAnalysisWindow._instances.remove(self)
         super().closeEvent(event)
+
+    @pyqtSlot()
+    def _on_workers_idle(self):
+        if self._close_when_idle:
+            self._close_when_idle = False
+            QTimer.singleShot(0, self.close)
 
     @classmethod
     def close_all_windows(cls):

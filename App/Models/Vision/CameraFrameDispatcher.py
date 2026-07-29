@@ -37,6 +37,9 @@ class CameraFrameDispatcher(QObject):
         if self._active_view_model is not None and self._last_frame is not None:
             self._deliver_frame(self._active_view_model, self._last_frame)
 
+    def is_active_view_model(self, view_model):
+        return self._active_view_model is view_model
+
     def _deliver_frame(self, view_model, image):
         try:
             view_model.receive_frame(image)

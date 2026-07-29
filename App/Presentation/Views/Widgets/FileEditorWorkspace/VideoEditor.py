@@ -16,7 +16,9 @@ from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 from App.Infrastructure.Helpers.PathHelper import project_media_item_path
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet, resource_path
-from App.Presentation.ViewModels.Workers import FunctionWorker
+from App.Presentation.ViewModels.FeatureViewModel.VideoEditorViewModel import (
+    VideoEditorViewModel,
+)
 
 
 class VideoEditor(QWidget):
@@ -27,26 +29,39 @@ class VideoEditor(QWidget):
     media_load_finished = pyqtSignal()
     playback_requested = pyqtSignal()
 
+    @property
+    def _workers(self):
+        """Compatibility view; worker ownership remains in the ViewModel."""
+        return self.view_model._workers
+
     def __init__(
         self,
         file_path=None,
         project_name=None,
         parent=None,
         project_path=None,
+        view_model=None,
     ):
         super().__init__(parent)
         self.project_name = project_name
         self.project_path = project_path
         self.file_path = file_path
-        self.media_player = QMediaPlayer(self)
-        self.video_widget = QVideoWidget(self)
+        self.view_model = view_model or VideoEditorViewModel(
+            file_path=file_path,
+            parent=self,
+        )
+        self._media_player = None
+        self.video_widget = None
+        self.video_sink = None
+        self._video_placeholder = None
+        self._video_layout = None
         self.seeking = False
         self.current_frame = None  # Store the latest frame from video
-        self._workers = set()
         self._close_when_idle = False
         self._media_load_pending = False
         self._loaded_file_path = None
         self._resume_position = 0
+        self._play_when_ready = False
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("VideoEditor")
@@ -55,11 +70,13 @@ class VideoEditor(QWidget):
         self.connect_signals()
         self.load_style()
 
-        # Get video sink from media player to receive frames (replaces QVideoProbe)
-        self.video_sink = self.media_player.videoSink()
-        self.video_sink.videoFrameChanged.connect(self.on_video_frame_probed)
+        self.view_model.source_ready.connect(self._on_source_ready)
+        self.view_model.source_error.connect(self._on_source_error)
+        self.view_model.capture_saved.connect(self._on_capture_saved)
+        self.view_model.capture_error.connect(self._on_capture_error)
+        self.view_model.workers_idle.connect(self._maybe_emit_close_ready)
 
-        if file_path and os.path.exists(file_path):
+        if file_path:
             self.load_video(file_path)
         else:
             self._set_play_icon()
@@ -75,11 +92,12 @@ class VideoEditor(QWidget):
         # --- 1. Video Area ---
         video_container = QWidget()
         video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        video_layout = QVBoxLayout(video_container)
-        video_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        video_layout.addWidget(self.video_widget)
+        self._video_layout = QVBoxLayout(video_container)
+        self._video_layout.setContentsMargins(0, 0, 0, 0)
+        self._video_placeholder = QLabel("Press Play to load video")
+        self._video_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._video_placeholder.setObjectName("VideoPlaceholder")
+        self._video_layout.addWidget(self._video_placeholder)
 
         main_layout.addWidget(video_container, stretch=1)
 
@@ -158,8 +176,6 @@ class VideoEditor(QWidget):
         panel_layout.addLayout(btns_row_layout)
         main_layout.addWidget(control_panel)
 
-        self.media_player.setVideoOutput(self.video_widget)
-
     def _create_button(self, base_path, icon_name, tooltip, size=40, icon_size=20):
         btn = QPushButton()
         btn.setObjectName("MediaBtn")
@@ -196,16 +212,47 @@ class VideoEditor(QWidget):
         self.btn_skip_forward.clicked.connect(self.skip_forward)
 
         self.position_slider.sliderPressed.connect(self.on_slider_pressed)
-        self.position_slider.sliderMoved.connect(self.media_player.setPosition)
+        self.position_slider.sliderMoved.connect(self._set_position)
         self.position_slider.sliderReleased.connect(self.on_slider_released)
+        self.speed_combo.currentIndexChanged.connect(self.on_speed_changed)
 
-        self.media_player.positionChanged.connect(self.update_position)
-        self.media_player.durationChanged.connect(self.update_duration)
-        self.media_player.playbackStateChanged.connect(self.update_play_button)
-        self.media_player.mediaStatusChanged.connect(
+    @property
+    def media_player(self):
+        """Compatibility accessor; normal tab creation keeps this lazy."""
+        self._ensure_playback_objects()
+        return self._media_player
+
+    def _ensure_playback_objects(self):
+        if self._media_player is not None:
+            return
+
+        # Importing/constructing the native video surface is deliberately lazy:
+        # restored or unopened tabs should not initialize multimedia backends.
+        self._media_player = QMediaPlayer(self)
+        self.video_widget = QVideoWidget(self)
+        self.video_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        if self._video_placeholder is not None:
+            self._video_layout.replaceWidget(
+                self._video_placeholder,
+                self.video_widget,
+            )
+            self._video_placeholder.hide()
+        else:
+            self._video_layout.addWidget(self.video_widget)
+        self._media_player.setVideoOutput(self.video_widget)
+        self.video_sink = self._media_player.videoSink()
+        self.video_sink.videoFrameChanged.connect(self.on_video_frame_probed)
+        self._media_player.positionChanged.connect(self.update_position)
+        self._media_player.durationChanged.connect(self.update_duration)
+        self._media_player.playbackStateChanged.connect(
+            self.update_play_button
+        )
+        self._media_player.mediaStatusChanged.connect(
             self._on_media_status_changed
         )
-        self.speed_combo.currentIndexChanged.connect(self.on_speed_changed)
 
     @pyqtSlot(QVideoFrame)
     def on_video_frame_probed(self, frame):
@@ -219,6 +266,7 @@ class VideoEditor(QWidget):
         """Prepare a video tab without allocating a decoder or auto-playing."""
         self._release_media_source(preserve_position=False)
         self.file_path = file_path
+        self.view_model.set_video(file_path)
         self._resume_position = 0
         self.current_frame = None
         self.position_slider.setRange(0, 0)
@@ -228,15 +276,11 @@ class VideoEditor(QWidget):
         self._set_play_icon()
 
     def _ensure_media_source(self):
-        if not self.file_path or not os.path.isfile(self.file_path):
-            QMessageBox.warning(
-                self,
-                "No Video",
-                "The selected video file is no longer available.",
-            )
-            return False
-
-        normalized_file = os.path.normcase(os.path.abspath(self.file_path))
+        normalized_file = (
+            os.path.normcase(os.path.abspath(self.file_path))
+            if isinstance(self.file_path, str) and self.file_path
+            else None
+        )
         normalized_loaded = (
             os.path.normcase(os.path.abspath(self._loaded_file_path))
             if self._loaded_file_path
@@ -244,17 +288,46 @@ class VideoEditor(QWidget):
         )
         if (
             normalized_loaded == normalized_file
-            and not self.media_player.source().isEmpty()
+            and self._media_player is not None
+            and not self._media_player.source().isEmpty()
         ):
             return True
 
+        if self._media_load_pending:
+            return False
         self._media_load_pending = True
         self.media_load_started.emit()
-        self._loaded_file_path = self.file_path
-        self.media_player.setSource(QUrl.fromLocalFile(self.file_path))
+        if not self.view_model.validate_source():
+            self._finish_media_loading()
+        return False
+
+    @pyqtSlot(str)
+    def _on_source_ready(self, file_path):
+        if not self._media_load_pending:
+            return
+        self._ensure_playback_objects()
+        self._loaded_file_path = file_path
+        self._media_player.setSource(QUrl.fromLocalFile(file_path))
         rate = self.speed_combo.currentData()
-        self.media_player.setPlaybackRate(rate if rate is not None else 1.0)
-        return True
+        self._media_player.setPlaybackRate(
+            rate if rate is not None else 1.0
+        )
+        if self._play_when_ready:
+            self._media_player.play()
+            self._play_when_ready = False
+
+    @pyqtSlot(str)
+    def _on_source_error(self, message):
+        self._loaded_file_path = None
+        self._play_when_ready = False
+        self._finish_media_loading()
+        QMessageBox.warning(self, "No Video", message)
+
+    def _finish_media_loading(self):
+        if not self._media_load_pending:
+            return
+        self._media_load_pending = False
+        self.media_load_finished.emit()
 
     def is_media_loading(self):
         return self._media_load_pending
@@ -273,9 +346,8 @@ class VideoEditor(QWidget):
             if status == QMediaPlayer.MediaStatus.InvalidMedia:
                 self._loaded_file_path = None
             elif self._resume_position > 0:
-                self.media_player.setPosition(self._resume_position)
-            self._media_load_pending = False
-            self.media_load_finished.emit()
+                self._media_player.setPosition(self._resume_position)
+            self._finish_media_loading()
 
     def _set_pause_icon(self):
         icon_base = resource_path(os.path.join("App", "ReSource", "Icon", "Media"))
@@ -306,7 +378,7 @@ class VideoEditor(QWidget):
 
     @pyqtSlot()
     def capture_image(self):
-        if not self.file_path or not os.path.exists(self.file_path):
+        if not self.file_path:
             QMessageBox.warning(self, "No Video", "No video is currently open.")
             return
 
@@ -321,18 +393,11 @@ class VideoEditor(QWidget):
             os.path.join(item_path, "Image") if item_path else None
         )
 
-        if image_folder:
-            try:
-                os.makedirs(image_folder, exist_ok=True)
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Cannot create Image folder: {str(e)}")
-                return
-
         # Get frame from video sink if available
         pixmap = None
         if self.current_frame and not self.current_frame.isNull():
             pixmap = QPixmap.fromImage(self.current_frame)
-        else:
+        elif self.video_widget is not None:
             # Fallback: grab from video widget (might be empty)
             pixmap = self.video_widget.grab()
             
@@ -343,7 +408,11 @@ class VideoEditor(QWidget):
         # --- BEGIN MODIFICATION: DRAW TIMESTAMP ON IMAGE ---
         
         # 1. Tính toán thời gian (Time Calculation)
-        current_ms = self.media_player.position()
+        current_ms = (
+            self._media_player.position()
+            if self._media_player is not None
+            else self._resume_position
+        )
         total_seconds = current_ms / 1000.0
         
         # Định dạng text theo kiểu "T= ..." 
@@ -401,26 +470,14 @@ class VideoEditor(QWidget):
                 filepath += ".png"
 
         image = pixmap.toImage()
-        worker = FunctionWorker(lambda: image.save(filepath, "PNG"))
-        self._workers.add(worker)
-        worker.result_ready.connect(
-            lambda success: self._on_capture_saved(
-                filepath,
-                success,
-                item_path,
-            )
+        self.view_model.save_capture(
+            image,
+            filepath,
+            item_path=item_path,
+            image_folder=image_folder,
         )
-        worker.error_occurred.connect(
-            lambda message: QMessageBox.critical(self, "Save Error", message)
-        )
-        worker.finished.connect(lambda: self._finish_worker(worker))
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
 
-    def _on_capture_saved(self, filepath, success, project_item_path=None):
-        if not success:
-            QMessageBox.warning(self, "Save Failed", "Cannot save image file.")
-            return
+    def _on_capture_saved(self, filepath, project_item_path=None):
         if not self.project_name or not project_item_path:
             return
         item_name = os.path.basename(project_item_path)
@@ -431,36 +488,41 @@ class VideoEditor(QWidget):
             filepath,
         )
 
-    def _finish_worker(self, worker):
-        self._workers.discard(worker)
-        if self._close_when_idle and not any(
-            item.isRunning() for item in self._workers
-        ):
-            self._close_when_idle = False
-            QTimer.singleShot(0, self.close_ready.emit)
+    def _on_capture_error(self, message):
+        QMessageBox.critical(self, "Save Error", message)
 
     @pyqtSlot()
     def skip_back(self):
-        current = self.media_player.position()
+        if self._media_player is None:
+            return
+        current = self._media_player.position()
         new_pos = max(0, current - 10000)
-        self.media_player.setPosition(new_pos)
+        self._media_player.setPosition(new_pos)
 
     @pyqtSlot()
     def skip_forward(self):
-        current = self.media_player.position()
-        duration = self.media_player.duration()
+        if self._media_player is None:
+            return
+        current = self._media_player.position()
+        duration = self._media_player.duration()
         new_pos = min(duration, current + 30000)
-        self.media_player.setPosition(new_pos)
+        self._media_player.setPosition(new_pos)
 
     @pyqtSlot()
     def toggle_play(self):
-        if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+        if (
+            self._media_player is not None
+            and self._media_player.playbackState()
+            == QMediaPlayer.PlaybackState.PlayingState
+        ):
             self.pause_playback()
             return
 
         self.playback_requested.emit()
+        self._play_when_ready = True
         if self._ensure_media_source():
-            self.media_player.play()
+            self._media_player.play()
+            self._play_when_ready = False
 
     def update_play_button(self, state):
         if state == QMediaPlayer.PlaybackState.PlayingState:
@@ -478,8 +540,16 @@ class VideoEditor(QWidget):
         self.update_time_label()
 
     def update_time_label(self):
-        pos = self.media_player.position()
-        dur = self.media_player.duration()
+        pos = (
+            self._media_player.position()
+            if self._media_player is not None
+            else self._resume_position
+        )
+        dur = (
+            self._media_player.duration()
+            if self._media_player is not None
+            else 0
+        )
         pos_str = self._format_time(pos // 1000)
         dur_str = self._format_time(dur // 1000) if dur > 0 else "00:00:00"
         self.label_time.setText(f"{pos_str} / {dur_str}")
@@ -493,8 +563,13 @@ class VideoEditor(QWidget):
     @pyqtSlot(int)
     def on_speed_changed(self, index):
         rate = self.speed_combo.itemData(index)
-        if rate is not None:
-            self.media_player.setPlaybackRate(rate)
+        if rate is not None and self._media_player is not None:
+            self._media_player.setPlaybackRate(rate)
+
+    @pyqtSlot(int)
+    def _set_position(self, position):
+        if self._media_player is not None:
+            self._media_player.setPosition(position)
 
     @pyqtSlot()
     def on_slider_pressed(self):
@@ -502,20 +577,26 @@ class VideoEditor(QWidget):
 
     @pyqtSlot()
     def on_slider_released(self):
-        self.media_player.setPosition(self.position_slider.value())
+        self._set_position(self.position_slider.value())
         self.seeking = False
 
     # --- New methods to support rename ---
     def _release_media_source(self, preserve_position):
-        if preserve_position and not self.media_player.source().isEmpty():
-            self._resume_position = max(0, self.media_player.position())
+        if (
+            preserve_position
+            and self._media_player is not None
+            and not self._media_player.source().isEmpty()
+        ):
+            self._resume_position = max(0, self._media_player.position())
         elif not preserve_position:
             self._resume_position = 0
+        self._play_when_ready = False
         if self._media_load_pending:
-            self._media_load_pending = False
-            self.media_load_finished.emit()
-        self.media_player.stop()
-        self.media_player.setSource(QUrl())
+            self.view_model.cancel_pending()
+            self._finish_media_loading()
+        if self._media_player is not None:
+            self._media_player.stop()
+            self._media_player.setSource(QUrl())
         self._loaded_file_path = None
         self.current_frame = None
         self._set_play_icon()
@@ -524,8 +605,8 @@ class VideoEditor(QWidget):
         """Pause playback, optionally releasing the decoder while retaining position."""
         if release_resources:
             self._release_media_source(preserve_position=True)
-        else:
-            self.media_player.pause()
+        elif self._media_player is not None:
+            self._media_player.pause()
             self._set_play_icon()
 
     def stop_playback(self):
@@ -537,20 +618,30 @@ class VideoEditor(QWidget):
         self.load_video(new_path)
 
     def closeEvent(self, event: QCloseEvent):
-        running_workers = [
-            worker for worker in self._workers if worker.isRunning()
-        ]
-        if running_workers:
+        view_model_busy = self.view_model.has_running_workers()
+        if view_model_busy:
             self._close_when_idle = True
-            for worker in running_workers:
-                worker.requestInterruption()
+            self.view_model.request_shutdown()
             event.ignore()
             return
-        try:
-            self.video_sink.videoFrameChanged.disconnect(self.on_video_frame_probed)
-        except (TypeError, RuntimeError):
-            pass
+        if self.video_sink is not None:
+            try:
+                self.video_sink.videoFrameChanged.disconnect(
+                    self.on_video_frame_probed
+                )
+            except (TypeError, RuntimeError):
+                pass
         self.stop_playback()
-        self.media_player.setVideoOutput(None)
+        if self._media_player is not None:
+            self._media_player.setVideoOutput(None)
+        self.view_model.close()
         self.current_frame = None
         super().closeEvent(event)
+
+    def _maybe_emit_close_ready(self):
+        if not self._close_when_idle:
+            return
+        if self.view_model.has_running_workers():
+            return
+        self._close_when_idle = False
+        QTimer.singleShot(0, self.close_ready.emit)

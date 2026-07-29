@@ -8,7 +8,7 @@ import weakref
 from PyQt6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget,
                              QFileDialog, QInputDialog, QMessageBox, QDialog,
                              QStatusBar, QDockWidget, QTextEdit, QMenu)
-from PyQt6.QtCore import Qt, QEvent, pyqtSlot, QFileInfo, QTimer, QPoint
+from PyQt6.QtCore import Qt, QEvent, pyqtSlot, QTimer, QPoint
 from PyQt6.QtGui import QCloseEvent
 
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
@@ -16,7 +16,10 @@ from App.Infrastructure.Helpers.PathHelper import (
     canonical_path,
     is_path_within,
 )
-from App.Infrastructure.Helpers.WindowOwnershipHelper import configure_secondary_window
+from App.Infrastructure.Helpers.WindowOwnershipHelper import (
+    configure_secondary_window,
+    fit_window_to_available_screen,
+)
 from App.Presentation.ViewModels.MainViewModel import MainViewModel
 from App.Presentation.Views.MenuBar import MenuBar
 from App.Presentation.Views.Widgets.SideBar import ProjectSidebar
@@ -40,9 +43,9 @@ class FileEditorWindow(QMainWindow):
         self.view_model = view_model
         self._opened = False
         self._close_pending = False
+        self._screen_fit_applied = False
 
         self.setWindowTitle("FileEditor")
-        self.resize(1100, 720)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setCentralWidget(self.editor_widget)
         self._apply_window_title()
@@ -69,11 +72,21 @@ class FileEditorWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self._screen_fit_applied:
+            fit_window_to_available_screen(
+                self,
+                preferred_size=(1100, 720),
+                anchor=self.main_view,
+                width_ratio=0.94,
+                height_ratio=0.90,
+                minimum_size=(640, 420),
+            )
+            self._screen_fit_applied = True
         configure_secondary_window(self, self.main_view)
         if not self._opened:
             self._opened = True
             self.main_view.view_model.on_editor_opened()
-        self.main_view.camera_dispatcher.set_active_view_model(self.view_model)
+        self.main_view.view_model.set_active_frame_view_model(self.view_model)
 
     def closeEvent(self, event):
         try:
@@ -86,9 +99,9 @@ class FileEditorWindow(QMainWindow):
                 return
 
             self._close_pending = False
-            active_vm = self.main_view.camera_dispatcher._active_view_model
-            if active_vm is self.view_model:
-                self.main_view.camera_dispatcher.set_active_view_model(None)
+            self.main_view.view_model.clear_active_frame_view_model(
+                self.view_model
+            )
 
             if hasattr(self.editor_widget, "close_editor"):
                 self.editor_widget.close_editor()
@@ -122,10 +135,13 @@ class MainView(QMainWindow):
         self.resize(1000, 700)
 
         self.view_model = view_model or MainViewModel()
-        self.camera_dispatcher = self.view_model.get_camera_dispatcher()
         self._close_after_file_editor = False
+        self._close_after_background_workers = False
+        self._close_after_sidebar = False
+        self._close_after_services = False
 
         self.sidebar = ProjectSidebar(self)
+        self.sidebar.shutdown_ready.connect(self._on_sidebar_shutdown_ready)
         self.sidebar.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable |
                                  QDockWidget.DockWidgetFeature.DockWidgetMovable |
                                  QDockWidget.DockWidgetFeature.DockWidgetFloatable)
@@ -153,6 +169,10 @@ class MainView(QMainWindow):
         self.editor_workspace.tab_widget.tabCloseRequested.connect(self.on_tab_close_requested)
         self._connect_view_model_signals()
         self.connect_signals()
+        self.view_model.background_workers_idle.connect(
+            self._on_background_workers_idle
+        )
+        self.view_model.shutdown_ready.connect(self._on_services_shutdown_ready)
 
         self.pending_restore_editors = []
         self.restoring_in_progress = False
@@ -201,6 +221,13 @@ class MainView(QMainWindow):
         self.view_model.item_added.connect(self.sidebar.add_structure_item)
         self.view_model.item_removed.connect(self.sidebar.remove_item_node)
         self.view_model.item_renamed.connect(self.sidebar.rename_item_node)
+        self.view_model.file_removed.connect(self.sidebar.remove_file_node)
+        self.view_model.hidden_media_paths_changed.connect(
+            self.sidebar.set_hidden_media_paths
+        )
+        self.view_model.media_revealed.connect(
+            self.sidebar.reveal_media_file
+        )
         self.view_model.file_loaded.connect(self._on_file_loaded)
         self.view_model.sidebar_loading_changed.connect(
             self.sidebar.set_loading_source
@@ -208,15 +235,15 @@ class MainView(QMainWindow):
         self.view_model.camera_error.connect(self.show_error)
         self.view_model.open_editor_requested.connect(self._on_open_editor_requested)
         self.view_model.file_renamed.connect(self._on_file_renamed)
-        self.view_model.camera_manager.camera_list_signal.connect(self._on_camera_list_updated)
+        self.view_model.camera_list_updated.connect(self._on_camera_list_updated)
 
         self.view_model.request_unwatch_item.connect(self.sidebar.unwatch_item_media)
         self.view_model.request_unwatch_project.connect(self.sidebar.unwatch_project_media)
         self.view_model.request_close_editors_for_item.connect(self._close_editors_for_target)
 
-        self.view_model.camera_manager.status_message_signal.connect(self._update_camera_status)
-        self.view_model.camera_manager.error_occurred_signal.connect(self._on_camera_error)
-        self.view_model.hardware_manager.connection_status_changed.connect(self._update_hardware_status)
+        self.view_model.camera_status_changed.connect(self._update_camera_status)
+        self.view_model.camera_error.connect(self._on_camera_error)
+        self.view_model.hardware_status_changed.connect(self._update_hardware_status)
 
         self.view_model.request_stop_video_editor.connect(self._stop_video_editor)
         self.view_model.request_close_editor_for_file.connect(self._close_editor_by_path)
@@ -305,7 +332,12 @@ class MainView(QMainWindow):
         self.pending_restore_editors.append((project_name, relative_path))
         if not self.restoring_in_progress:
             self.restoring_in_progress = True
-            self._process_next_pending_editor()
+            self._continue_session_restore()
+
+    def _continue_session_restore(self):
+        """Yield to the GUI event loop between restored editor tabs."""
+        if self.restoring_in_progress:
+            QTimer.singleShot(0, self._process_next_pending_editor)
 
     def _process_next_pending_editor(self):
         if not self.pending_restore_editors:
@@ -346,6 +378,7 @@ class MainView(QMainWindow):
         sb.sig_item_cut.connect(self.view_model.handle_cut_item)
         sb.sig_item_delete.connect(self._confirm_delete_item)
         sb.sig_item_rename.connect(self._input_rename_item)
+        sb.sig_item_open_media.connect(self._open_item_media_dialog)
         sb.sig_open_editor.connect(self.action_open_file_in_editor)
 
         sb.sig_file_copy.connect(self.view_model.handle_copy_file)
@@ -490,36 +523,61 @@ class MainView(QMainWindow):
         dlg = DeleteResourcesDialog(
             self, "Delete File",
             f"Delete file '{file_name}'?",
-            full_path, show_checkbox=False
+            full_path,
+            show_checkbox=True,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.view_model.handle_delete_file(project_name, item_name, media_type, file_name)
+            self.view_model.handle_delete_file(
+                project_name,
+                item_name,
+                media_type,
+                file_name,
+                dlg.is_delete_disk_checked(),
+            )
 
     def _open_project_dialog(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Project Directory")
         if folder:
-            if not self.view_model.project_manager.is_folder_project(folder):
-                QMessageBox.warning(
-                    self,
-                    "Invalid Selection",
-                    "The selected folder is not a valid project."
-                )
-                return
-            else:
-                self.view_model.handle_open_project(folder)
+            self.view_model.handle_open_project(folder)
 
     def _open_item_dialog(self, project_name):
         folder = QFileDialog.getExistingDirectory(self, f"Open Item for '{project_name}'")
         if folder:
-            if not self.view_model.project_manager.is_folder_item(folder):
-                QMessageBox.warning(
-                    self,
-                    "Invalid Selection",
-                    "The selected folder is not a valid item."
-                )
-                return
-            else:
-                self.view_model.handle_open_item(project_name, folder)
+            self.view_model.handle_open_item(project_name, folder)
+
+    @pyqtSlot(str, str, str)
+    def _open_item_media_dialog(
+        self,
+        project_name,
+        item_name,
+        media_type,
+    ):
+        config = self.view_model.get_media_picker_config(
+            project_name,
+            item_name,
+            media_type,
+        )
+        if config is None:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Cannot resolve the {media_type} folder for this Item.",
+            )
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            config["title"],
+            config["directory"],
+            config["filter"],
+        )
+        if file_path:
+            self.view_model.handle_open_media_file(
+                project_name,
+                item_name,
+                media_type,
+                file_path,
+            )
 
     def _select_folder_save_as(self, project_name):
         folder = QFileDialog.getExistingDirectory(self, "Select Directory to Save Project")
@@ -548,18 +606,15 @@ class MainView(QMainWindow):
                 project_name = None
                 project_path = None
 
-        if not full_path or not os.path.exists(full_path):
+        if not full_path:
             QMessageBox.warning(self, "Error", "File not found.")
-            if self.restoring_in_progress:
-                self._process_next_pending_editor()
+            self._continue_session_restore()
             return
 
         if self.editor_workspace.activate_tab_by_path(full_path):
-            if self.restoring_in_progress:
-                self._process_next_pending_editor()
+            self._continue_session_restore()
             return
 
-        file_info = QFileInfo(full_path)
         ext = os.path.splitext(full_path)[1].lower()
         image_exts = ['.png', '.jpg', '.jpeg', '.bmp', '.gif']
         video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.flv']
@@ -583,8 +638,7 @@ class MainView(QMainWindow):
             editor.sig_open_video.connect(self.action_open_file_in_editor)
             editor.media_created.connect(self.sidebar.notify_media_created)
             self.editor_workspace.add_editor_tab(editor, os.path.basename(full_path), project_name, full_path)
-            if self.restoring_in_progress:
-                self._process_next_pending_editor()
+            self._continue_session_restore()
             return
 
         if ext in image_exts:
@@ -608,22 +662,10 @@ class MainView(QMainWindow):
             editor.setProperty("file_name", os.path.basename(full_path))
             editor.setProperty("full_path", full_path)
             editor.sig_open_video.connect(self.action_open_file_in_editor)
-            view_model.load_image(full_path)
+            editor.set_image_source(full_path)
             self.editor_workspace.add_editor_tab(editor, os.path.basename(full_path), project_name, full_path)
-            if self.restoring_in_progress:
-                self._process_next_pending_editor()
+            self._continue_session_restore()
             return
-
-        if file_info.size() > 5 * 1024 * 1024:
-            resp = QMessageBox.question(
-                self, "Large File",
-                f"File '{file_info.fileName()}' is large (>5MB). Open anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if resp == QMessageBox.StandardButton.No:
-                if self.restoring_in_progress:
-                    self._process_next_pending_editor()
-                return
 
         self.view_model.load_file_confirmed(full_path, project_name)
 
@@ -640,7 +682,7 @@ class MainView(QMainWindow):
             return None, None, None
 
         item_path = self.view_model.get_item_path(project_name, item_name)
-        if not item_path or not os.path.isdir(item_path):
+        if not item_path:
             return None, None, None
 
         return project_name, item_name, item_path
@@ -663,7 +705,9 @@ class MainView(QMainWindow):
         if self.file_editor_window is not None and self.file_editor_window.isVisible():
             self.file_editor_window.raise_()
             self.file_editor_window.activateWindow()
-            self.camera_dispatcher.set_active_view_model(self.file_editor_window.view_model)
+            self.view_model.set_active_frame_view_model(
+                self.file_editor_window.view_model
+            )
             return
 
         project_name, item_name, item_path = self._get_current_selected_item_context()
@@ -677,16 +721,13 @@ class MainView(QMainWindow):
 
         session_path = self._build_file_editor_session_path(item_path, item_name)
 
-        from App.Presentation.ViewModels.FeatureViewModel.FileEditorViewModel import FileEditorViewModel
         from App.Presentation.Views.Widgets.FileEditorWorkspace.FileEditor import FileEditor
 
-        view_model = FileEditorViewModel(
+        view_model = self.view_model.create_file_editor_view_model(
             project_name=project_name,
             file_name=f"{item_name}.session",
             content="",
             full_path=session_path,
-            camera_manager=self.view_model.camera_manager,
-            control_panel_manager=self.view_model.control_panel_manager
         )
         view_model.media_created.connect(self.sidebar.notify_media_created)
 
@@ -708,8 +749,7 @@ class MainView(QMainWindow):
     def _on_file_loaded(self, success, content, file_name, project_name, full_path):
         if not success:
             QMessageBox.warning(self, "Read Error", f"Cannot read file:\n{content}")
-            if self.restoring_in_progress:
-                self._process_next_pending_editor()
+            self._continue_session_restore()
             return
 
         editor_widget = QTextEdit()
@@ -756,8 +796,7 @@ class MainView(QMainWindow):
         editor_widget.document().setModified(False)
         self._pending_text_loads.pop(editor_widget, None)
         self.sidebar.set_loading_source(state["loading_token"], False)
-        if self.restoring_in_progress:
-            self._process_next_pending_editor()
+        self._continue_session_restore()
 
     @pyqtSlot(str, str, str, str, str)
     def _on_file_renamed(self, project_name, item_name, media_type, old_name, new_name):
@@ -811,7 +850,7 @@ class MainView(QMainWindow):
             )
         QTimer.singleShot(
             0,
-            lambda target=active_vm: self.camera_dispatcher.set_active_view_model(
+            lambda target=active_vm: self.view_model.set_active_frame_view_model(
                 target
             ),
         )
@@ -820,8 +859,7 @@ class MainView(QMainWindow):
         widget = self.editor_workspace.tab_widget.widget(index)
         if widget in self.tab_view_models:
             vm = self.tab_view_models[widget]
-            if self.camera_dispatcher._active_view_model is vm:
-                self.camera_dispatcher.set_active_view_model(None)
+            self.view_model.clear_active_frame_view_model(vm)
         self._close_tab_safely(index)
 
     def _close_tab_safely(self, index) -> bool:
@@ -896,6 +934,7 @@ class MainView(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         if not self.view_model.shutdown_workers():
+            self._close_after_background_workers = True
             self.system_status_bar.showMessage(
                 "A background file operation is still running. Please wait before closing.",
                 5000,
@@ -903,8 +942,9 @@ class MainView(QMainWindow):
             event.ignore()
             return
         if not self.sidebar.shutdown():
+            self._close_after_sidebar = True
             self.system_status_bar.showMessage(
-                "Media folders are still being scanned. Please try closing again.",
+                "Media folders are still being scanned. Closing automatically when ready.",
                 3000,
             )
             event.ignore()
@@ -940,28 +980,46 @@ class MainView(QMainWindow):
             event.ignore()
             return
         if not self.view_model.shutdown_workers():
+            self._close_after_background_workers = True
             self.system_status_bar.showMessage(
-                "Finishing file saves before closing. Please try again shortly.",
+                "Finishing file saves before closing.",
                 5000,
             )
             event.ignore()
             return
 
-        if not self.view_model.camera_manager.cleanup():
-            self.system_status_bar.showMessage(
-                "Camera shutdown is still in progress. Please try closing again.",
-                5000,
-            )
-            event.ignore()
-            return
-        self.view_model.hardware_manager.cleanup()
-        self.view_model.save_session_with_editors(
+        if not self.view_model.begin_application_shutdown(
             editor_list,
             expanded_paths,
             sidebar_order,
-        )
+        ):
+            self._close_after_services = True
+            self.system_status_bar.showMessage(
+                "Saving the session and releasing devices before closing.",
+                5000,
+            )
+            event.ignore()
+            return
 
         event.accept()
+
+    @pyqtSlot()
+    def _on_background_workers_idle(self):
+        if self._close_after_background_workers:
+            self._close_after_background_workers = False
+            QTimer.singleShot(0, self.close)
+
+    @pyqtSlot()
+    def _on_sidebar_shutdown_ready(self):
+        if self._close_after_sidebar:
+            self._close_after_sidebar = False
+            QTimer.singleShot(0, self.close)
+
+    @pyqtSlot()
+    def _on_services_shutdown_ready(self):
+        if self._close_after_services:
+            self._close_after_services = False
+            QTimer.singleShot(0, self.close)
 
     def toggle_sidebar(self):
         self.sidebar.setVisible(not self.sidebar.isVisible())
@@ -1034,7 +1092,7 @@ class MainView(QMainWindow):
             match = re.search(r'Camera\s+(\d+)', message)
             if match:
                 idx = int(match.group(1))
-                name = self.view_model.camera_manager.get_camera_name(idx)
+                name = self.view_model.get_camera_name(idx)
                 self.status_bar.set_camera_connected(True, name)
             else:
                 self.status_bar.set_camera_connected(True, "Camera")
@@ -1042,9 +1100,10 @@ class MainView(QMainWindow):
 
         # Camera acquired mà camera đã active + đã có cache tên
         if "Camera acquired" in message:
-            active_idx = self.view_model.camera_manager.active_camera_index
+            camera_status = self.view_model.get_camera_status()
+            active_idx = camera_status["index"]
             if active_idx is not None:
-                name = self.view_model.camera_manager.get_camera_name(active_idx)
+                name = camera_status["name"]
                 self.status_bar.set_camera_connected(True, name)
             return
 
@@ -1063,7 +1122,7 @@ class MainView(QMainWindow):
             if match:
                 port_name = match.group(1)
             else:
-                port_name = self.view_model.hardware_manager.current_config.get("port", "Unknown")
+                port_name = self.view_model.get_hardware_port()
             self.status_bar.set_hardware_connected(True, port_name)
         else:
             self.status_bar.set_hardware_connected(False)
@@ -1078,8 +1137,9 @@ class MainView(QMainWindow):
                 self.camera_info[idx] = name
 
         # Nếu camera đang active thì refresh lại StatusBar bằng tên thật ngay khi scan xong
-        active_idx = self.view_model.camera_manager.active_camera_index
-        current_thread = self.view_model.camera_manager.current_thread
-        if active_idx is not None and current_thread is not None:
-            cam_name = self.view_model.camera_manager.get_camera_name(active_idx)
-            self.status_bar.set_camera_connected(True, cam_name)
+        camera_status = self.view_model.get_camera_status()
+        if camera_status["index"] is not None and camera_status["running"]:
+            self.status_bar.set_camera_connected(
+                True,
+                camera_status["name"],
+            )

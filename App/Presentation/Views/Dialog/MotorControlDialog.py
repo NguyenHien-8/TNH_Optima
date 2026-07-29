@@ -3,26 +3,36 @@
 # Author: TRAN NGUYEN HIEN
 # Email: trannguyenhien29085@gmail.com
 ##############################################################
-from collections import deque
-
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QComboBox, QFrame, QMessageBox)
 from PyQt6.QtCore import Qt
 
 from App.Presentation.ViewModels.DialogViewModel.MotorControlViewModel import MotorControlViewModel
-from App.Presentation.ViewModels.Workers import FunctionWorker
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
 
 class MotorControlDialog(QDialog):
-    def __init__(self, control_manager, parent=None):
+    @property
+    def _command_queue(self):
+        """Compatibility view; command ownership remains in the ViewModel."""
+        return self.view_model._command_queue
+
+    @property
+    def _command_worker(self):
+        return self.view_model._command_worker
+
+    def __init__(self, motor_view_model, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Motor Control Panel")
         self.setFixedSize(320, 250)
 
-        self.view_model = MotorControlViewModel(control_manager)    
-        self._command_queue = deque()
-        self._command_worker = None
+        self.view_model = (
+            motor_view_model
+            if isinstance(motor_view_model, MotorControlViewModel)
+            else MotorControlViewModel(motor_view_model)
+        )
         self._close_when_idle = False
+        self.view_model.command_completed.connect(self._show_result)
+        self.view_model.workers_idle.connect(self._on_workers_idle)
         self.setup_ui()
         self.load_motor_dialog_style()
 
@@ -136,52 +146,24 @@ class MotorControlDialog(QDialog):
     def on_click_up(self):
         h = self.combo_height.currentText()
         s = self.combo_speed.currentText()
-        self._enqueue_command(self.view_model.move_up, h, s)
+        self.view_model.move_up(h, s)
 
     def on_click_down(self):
         h = self.combo_height.currentText()
         s = self.combo_speed.currentText()
-        self._enqueue_command(self.view_model.move_down, h, s)
+        self.view_model.move_down(h, s)
 
     def on_click_stop(self):
-        self._enqueue_command(self.view_model.stop, priority=True)
-
-    def _enqueue_command(self, function, *args, priority=False):
-        command = (function, args)
-        if priority:
-            self._command_queue.appendleft(command)
-        else:
-            self._command_queue.append(command)
-        self._start_next_command()
-
-    def _start_next_command(self):
-        if self._command_worker is not None or not self._command_queue:
-            return
-        function, args = self._command_queue.popleft()
-        worker = FunctionWorker(function, *args)
-        self._command_worker = worker
-        worker.result_ready.connect(
-            lambda result: self._show_result(*result)
-        )
-        worker.error_occurred.connect(
-            lambda message: self._show_result(False, message)
-        )
-        worker.finished.connect(lambda: self._finish_command(worker))
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
-
-    def _finish_command(self, worker):
-        if self._command_worker is worker:
-            self._command_worker = None
-        if self._command_queue:
-            self._start_next_command()
-        elif self._close_when_idle:
-            self.close()
+        self.view_model.stop()
 
     def closeEvent(self, event):
-        if self._command_worker is not None and self._command_worker.isRunning():
+        if not self.view_model.request_close():
             self._close_when_idle = True
-            self._command_queue.clear()
             event.ignore()
             return
         super().closeEvent(event)
+
+    def _on_workers_idle(self):
+        if self._close_when_idle:
+            self._close_when_idle = False
+            self.close()

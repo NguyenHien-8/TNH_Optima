@@ -14,6 +14,7 @@ class CameraManager(QObject):
     error_occurred_signal = pyqtSignal(str)
     status_message_signal = pyqtSignal(str)
     fps_updated = pyqtSignal(float)
+    shutdown_ready = pyqtSignal()
 
     MIN_WIDTH, MIN_HEIGHT = 480, 360
     MAX_WIDTH, MAX_HEIGHT = 960, 576
@@ -129,19 +130,27 @@ class CameraManager(QObject):
         if self.scan_thread is not None and self.scan_thread.isRunning():
             self.scan_thread.requestInterruption()
 
-    def cleanup(self, wait_ms=1500):
-        """Request cooperative shutdown; bounded waits are used only during app exit."""
+    def cleanup(self, wait_ms=0):
+        """Request cooperative shutdown without blocking the caller by default."""
         self._shutting_down = True
         self._retry_timer.stop()
         self.stop_current_camera()
         self.stop_scan()
-        for worker in (self.current_thread, self.scan_thread):
-            if worker is not None and worker.isRunning():
-                worker.wait(wait_ms)
-        return not any(
+        is_idle = not any(
             worker is not None and worker.isRunning()
             for worker in (self.current_thread, self.scan_thread)
         )
+        if is_idle:
+            self.shutdown_ready.emit()
+        return is_idle
+
+    def _emit_shutdown_ready_if_idle(self):
+        if (
+            self._shutting_down
+            and self.current_thread is None
+            and self.scan_thread is None
+        ):
+            self.shutdown_ready.emit()
 
     def _start_camera_thread(self, cam_idx):
         if self._shutting_down or cam_idx is None:
@@ -171,6 +180,7 @@ class CameraManager(QObject):
         if worker is not None:
             worker.deleteLater()
         self._start_pending_camera()
+        self._emit_shutdown_ready_if_idle()
 
     @pyqtSlot(float)
     def _on_fps_updated(self, fps):
@@ -210,6 +220,7 @@ class CameraManager(QObject):
             self.scan_thread = None
         if worker is not None:
             worker.deleteLater()
+        self._emit_shutdown_ready_if_idle()
 
     @pyqtSlot(QImage)
     def _on_frame_routed(self, image):

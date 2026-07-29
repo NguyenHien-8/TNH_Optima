@@ -57,6 +57,8 @@ class FunctionWorker(QThread):
         try:
             result = self._function(*self._args, **self._kwargs)
         except Exception as exc:
+            if self.isInterruptionRequested():
+                return
             log_exception(f"Background task failed: {self._function!r}")
             self.error_occurred.emit(f"{type(exc).__name__}: {exc}")
             return
@@ -165,6 +167,9 @@ class SessionRestoreWorker(QThread):
                 "editors": self._session_manager.get_open_editors(),
                 "expanded_paths": self._session_manager.get_expanded_paths(),
                 "sidebar_order": sidebar_order,
+                "hidden_media_paths": (
+                    self._session_manager.get_hidden_media_paths()
+                ),
             }
             if not self.isInterruptionRequested():
                 self.restored.emit(result)

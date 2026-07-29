@@ -162,7 +162,6 @@ class VideoRecorderManager:
     def __init__(self, item_path):
         self.item_path = item_path
         self.video_folder = os.path.join(item_path, "Video")
-        FolderManager.ensure_folder_exists(self.video_folder)
 
         self.video_thread = None
         self.video_state = VideoState.IDLE

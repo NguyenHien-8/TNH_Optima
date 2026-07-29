@@ -4,7 +4,7 @@
 ; 3. Select Build > Compile to create the setup executable.
 
 #define MyAppName "TNH Optima"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "TNH"
 #define MyAppURL "https://github.com/NguyenHien-8/VCA_Optima"
 #define MyAppExeName "TNH Optima.exe"

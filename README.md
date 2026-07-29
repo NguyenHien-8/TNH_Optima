@@ -11,16 +11,17 @@ VCA Optima is the repository name; the desktop application is branded **TNH Opti
 - viewing images, videos, and UTF-8 text files; and
 - measuring the left and right liquid-droplet contact angles from a manually selected or automatically detected droplet profile.
 
-The codebase follows a pragmatic MVVM-style separation:
+The codebase follows an MVVM separation:
 
-- `Presentation` owns widgets, Qt signals/slots, UI state, and background-task orchestration;
+- `Presentation/Views` owns widgets, GUI-only rendering, dialogs, and user interaction;
+- `Presentation/ViewModels` owns presentation state, validation, background-task orchestration, and queued result signals;
 - `Models` owns project, device, media, and numerical-analysis logic;
 - `Infrastructure` owns paths, SQLite persistence, resources, crash logging, and Windows taskbar integration; and
 - `ReSource` contains QSS and bundled image/icon assets.
 
-It is not strict MVVM: `DropletAnalysisWindow` coordinates `AnalysisManager` directly, and `VideoEditor` implements frame capture/export locally. Blocking work is nevertheless kept away from the GUI thread through `QThread` workers and queued Qt signals.
+Views do not instantiate Models or worker threads. `MainViewModel` exposes manager operations and relays manager signals, while feature/dialog ViewModels own their workers. GUI-only `QPixmap`, `QPainter`, Matplotlib canvas, `QMediaPlayer`, and `QVideoWidget` work stays in the View. Filesystem I/O, image conversion, codec finalization, serial commands, directory scans, session shutdown work, and numerical analysis run outside the GUI thread through ViewModel-owned workers and queued Qt signals.
 
-The runtime stack is Python 3, PyQt6, OpenCV, NumPy, SciPy, Matplotlib, pyserial, and SQLite. `main.py` is the application entry point. PyInstaller uses `TNH_Optima.spec`, and `installer.iss` packages the resulting onedir build with Inno Setup.
+The runtime stack is Python 3, PyQt6, OpenCV, NumPy, SciPy, Matplotlib, pyserial, SQLite, and Send2Trash/pywin32 for native Windows Recycle Bin operations. `main.py` is the application entry point. PyInstaller uses `TNH_Optima.spec`, and `installer.iss` packages the resulting onedir build with Inno Setup.
 
 ### On-disk project contract
 
@@ -57,7 +58,7 @@ Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
 - **Young-Laplace Fit** is currently a circular-cap least-squares approximation; it does not solve the gravity-dependent Young-Laplace differential equation.
 - The hardware `query_period` value is persisted and displayed but is not used by a periodic status-query loop.
 - The directory is named `Release_1.1.2`, while `installer.iss` still declares installer version `1.1.1`.
-- The present tests cover path safety, loading lifecycles, sidebar scanning, lazy video playback, and video-frame capture. They do not yet provide numerical regression tests for contact-angle accuracy.
+- The present tests cover path safety, recoverable deletion and Sidebar-only removal, loading lifecycles, sidebar scanning, lazy video playback, frame capture, MVVM boundaries, background droplet work, and screen fitting. They do not yet provide numerical regression tests for contact-angle accuracy.
 
 ## Annotated Directory Structure
 
@@ -87,10 +88,12 @@ Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
     │   ├── Helpers/
     │   │   ├── PathHelper.py
     │   │   │   └── Windows Documents lookup, canonical paths, containment, media-to-Item resolution.
+    │   │   ├── RecycleBinHelper.py
+    │   │   │   └── Native recoverable deletion with no permanent-delete fallback.
     │   │   ├── ResourceHelper.py
     │   │   │   └── Source/PyInstaller resource paths and cached QSS loading.
     │   │   └── WindowOwnershipHelper.py
-    │   │       └── AppUserModelID, logical window ownership, and Win32 taskbar styles.
+    │   │       └── AppUserModelID, taskbar styles, and available-screen window fitting.
     │   ├── Repositories/
     │   │   ├── ConfigRepository.py
     │   │   │   └── SQLite key/value camera and serial configuration.
@@ -104,7 +107,7 @@ Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
     │   ├── ProjectManager.py
     │   │   └── Thread-safe Project/Item/media filesystem operations and TEMP/SAVED state.
     │   ├── SessionManager.py
-    │   │   └── Open Projects, tabs, visible Items, expanded paths, and sidebar order.
+    │   │   └── Open Projects, tabs, visible Items/media, expanded paths, and sidebar order.
     │   ├── CamHardwareManager.py
     │   │   └── Transaction-like camera preview/apply/revert and hardware configuration adapters.
     │   ├── ControlPanelManager.py
@@ -147,14 +150,18 @@ Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
     │   │   │   ├── FileEditorViewModel.py
     │   │   │   │   └── Live frames, serialized motor commands, capture/record, and safe close.
     │   │   │   ├── ImageEditorViewModel.py
-    │   │   │   │   └── Asynchronous image decode/save.
+    │   │   │   │   └── Asynchronous QImage decode/save with stale-request cancellation.
+    │   │   │   ├── VideoEditorViewModel.py
+    │   │   │   │   └── Background video validation and captured-frame file export.
+    │   │   │   ├── SidebarViewModel.py
+    │   │   │   │   └── Bounded media-scan queue, stale-refresh coalescing, and shutdown.
     │   │   │   └── DropletAnalysisViewModel.py
-    │   │   │       └── QImage-to-NumPy conversion, normalization, statistics, and heatmap data.
+    │   │   │       └── Image conversion, analysis algorithms, downsampling, export, and worker lifecycle.
     │   │   └── DialogViewModel/
     │   │       └── Small adapters/state holders for camera, serial, motor, save, and delete dialogs.
     │   └── Views/
     │       ├── MainView.py
-    │       │   └── Main shell, editor creation/restoration, active-video policy, and shutdown order.
+    │       │   └── Main shell, editor rendering/restoration, active-video policy, and responsive sizing.
     │       ├── MenuBar.py
     │       │   └── Composes the active File, Setup, and Control menus.
     │       ├── Dialog/
@@ -165,20 +172,22 @@ Logs live under `%LOCALAPPDATA%/TNH Optima/Logs/`.
     │       │   └── SaveResourcesDialog.py
     │       └── Widgets/
     │           ├── SideBar.py
-    │           │   └── Project tree, constrained reordering, filesystem watchers, scans, and cache.
+    │           │   └── Project tree, reordering, filesystem watchers, and scan rendering/cache.
     │           ├── EditorWorkspace.py
     │           │   └── Editor tabs, file drops, duplicate-path detection, and tab closing.
     │           ├── DropletAnalysisWindow.py
-    │           │   └── Interactive baseline/profile tools, analysis orchestration, overlay, and export.
+    │           │   └── Interactive baseline/profile tools and GUI-only overlay rendering.
     │           ├── StatusBar.py
     │           │   └── Camera and serial connection indicators.
     │           ├── FileEditorWorkspace/
     │           │   ├── FileEditor.py
     │           │   │   └── Live camera preview with motor and capture controls.
     │           │   ├── ImageEditor.py
-    │           │   │   └── Matplotlib image viewer, zoom/pan, save, and analysis launch.
+    │           │   │   └── Lightweight Qt image viewer, save, and analysis launch.
+    │           │   ├── ImageCanvas.py
+    │           │   │   └── QPainter viewport with 5 × 3 mm axes, zoom, and pan.
     │           │   ├── VideoEditor.py
-    │           │   │   └── Lazy playback, seeking/rate control, and timestamped frame capture.
+    │           │   │   └── Lazy multimedia stack, seeking/rate control, and timestamped capture.
     │           │   ├── MediaControlEditor.py
     │           │   │   └── Capture/record/pause/resume/stop controls.
     │           │   └── MotorControlEditor.py
@@ -297,7 +306,7 @@ left_point, right_point,
 left_tangent, right_tangent
 ```
 
-`DropletAnalysisWindow` draws these values as contact markers, inward baseline segments, tangent arrows, arcs, and labels. The exported overlay is written as a white-background PNG into the current Item's `Image/` directory with a collision-free timestamped name.
+`DropletAnalysisWindow` draws these values as contact markers, inward baseline segments, tangent arrows, arcs, and labels. `DropletAnalysisViewModel` owns baseline computation, edge detection, curve fitting, and file export. It downsamples only the display/heatmap arrays while retaining the full-resolution source for analysis. The View renders a GUI-owned canvas snapshot; PNG encoding, directory creation, and the collision-free timestamped write run in a worker.
 
 ### 6. Camera acquisition and frame dispatch
 
@@ -311,6 +320,13 @@ left_tangent, right_tangent
 
 Live still capture copies the current `QImage` and writes a timestamped lossless PNG into `<Item>/Image/`.
 
+Static image loading follows a two-stage boundary:
+
+- `ImageEditorViewModel` decodes the file as a `QImage` in a worker and ignores superseded requests.
+- `ImageEditor` creates the GUI-owned `QPixmap` once, then `ImageCanvas` renders it directly with `QPainter`.
+- Restored background tabs keep only their source path; `showEvent` starts decoding when a tab first becomes visible.
+- The canvas crops the source pixmap for zoom/pan while preserving the fixed `5 mm × 3 mm` coordinate view. It does not convert the image to NumPy or rebuild a Matplotlib figure on the GUI thread.
+
 Video recording uses a three-state machine: `idle → recording ↔ paused → idle`.
 
 - `VideoRecorderThread` owns OpenCV's `VideoWriter` and creates it lazily from the first valid frame.
@@ -321,10 +337,11 @@ Video recording uses a three-state machine: `idle → recording ↔ paused → i
 
 Video playback is deliberately lazy:
 
-- Opening or restoring a tab records only the path; `QMediaPlayer.setSource()` is not called.
-- The decoder is allocated only when the user presses Play.
+- Opening or restoring a tab creates only lightweight controls and records the path; neither `QMediaPlayer` nor `QVideoWidget` is constructed and `setSource()` is not called.
+- On Play, `VideoEditorViewModel` validates the path and performs potentially slow filesystem metadata I/O in a worker.
+- Only after validation does the View construct the GUI-owned multimedia objects; Qt Multimedia then opens the source asynchronously.
 - Before one video starts, `MainView` pauses every other video and releases its decoder while retaining its resume position.
-- Capturing a playback frame overlays the current timestamp. Project videos save to the sibling `Image/` directory, creating it if necessary; external videos use a Save As dialog.
+- Capturing a playback frame overlays the current timestamp. Project videos save to the sibling `Image/` directory, creating it if necessary; external videos use a Save As dialog. Directory creation, PNG encoding, and writing are owned by `VideoEditorViewModel` and run in a worker.
 
 ### 8. Serial actuator protocol
 
@@ -362,12 +379,16 @@ File Editor and Motor dialog commands run in serialized background queues. Stop 
 - Project/filesystem mutations are protected by a re-entrant lock.
 - Names reject empty values, path components, Windows-reserved filename characters, and trailing space/dot.
 - Canonical containment uses `realpath`, `normcase`, and `commonpath`, preventing `..` escapes and shared-prefix sibling confusion.
-- Copy collisions receive `_CopyN`; moves are implemented as copy followed by delete.
+- Copy collisions receive `_CopyN`; Cut/Move is implemented as copy followed by permanent cleanup of only the duplicated source.
+- Every Project, Item, Image, and Video delete dialog uses the existing disk-content checkbox. With the checkbox clear, the resource is removed from the Sidebar/workspace only and its content remains on disk. With it checked, the filesystem operation runs in a background worker and sends the file or directory to the Windows Recycle Bin. If recycling fails or its dependency is unavailable, the original content is retained; user-initiated deletion never falls back to permanent removal.
+- Media files removed from the Sidebar are stored as normalized hidden paths in the session. Both the initial directory scan and later `QFileSystemWatcher` refreshes filter those paths, preventing a kept-on-disk file from reappearing unexpectedly.
+- An Item's context menu provides `Open Image...` and `Open Video...`. The View only gathers the selected path; `MainViewModel` dispatches validation to a worker, `ProjectManager` verifies that the file is directly inside the correct Item media folder, and a successful result removes its hidden-session entry before signals restore the Sidebar node and open the editor.
 - UTF-8 text loads are capped at `20 MB`, rendered into the editor in `64 KiB` chunks, and saved atomically through a same-directory temporary file plus `os.replace`.
-- Sidebar media scanning is limited to two workers, cached by directory, and rendered in batches of 200 tree nodes. `QFileSystemWatcher` handles external changes; explicit `media_created` signals make in-app captures visible immediately.
+- `SidebarViewModel` owns a media-scan queue limited to two workers, coalesces repeated watcher refreshes, and returns names to the View. `ProjectSidebar` caches each directory and renders at most 200 tree nodes per event-loop turn. `QFileSystemWatcher` handles external changes; explicit `media_created` signals make in-app captures visible immediately.
 - Sidebar drag/drop reorders Projects at the root or Items within the same Project. It changes display/session order only; it does not move directories on disk.
-- Session restore validates existing paths, reconstructs Projects/Items in saved order, then reopens valid editor tabs.
-- Close operations are cooperative: editors defer destruction while workers or recording finalization remain active, then release multimedia, camera, serial, Matplotlib callbacks, watchers, and threads before saving the session.
+- Session restore validates existing paths, reconstructs Projects/Items in saved order, then reopens valid editor tabs one event-loop turn at a time so tab construction cannot monopolize the GUI thread.
+- Close operations are cooperative and non-blocking: Views never call `QThread.wait()` on the GUI thread. Editors defer destruction while ViewModel workers or recording finalization remain active. Final camera shutdown, serial disconnect, and session persistence complete asynchronously, then a queued signal retries the close automatically.
+- `FileEditorWindow` and `DropletAnalysisWindow` are sized once against the active screen's `availableGeometry()`, capped at `94% × 90%`, centered, and given a screen-safe minimum. This keeps them inside the work area on small displays and multi-monitor setups.
 
 ## Data Flow
 
@@ -409,8 +430,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["ImageEditor"] --> B["DropletAnalysisViewModel"]
-    B --> C["Grayscale NumPy image and statistics"]
+    A["ImageEditor passes a QImage"] --> B["DropletAnalysisViewModel workers"]
+    B --> C["Full-resolution grayscale array plus downsampled render data"]
     C --> D["Two selected baseline points"]
     D --> E["Baseline coefficients (a,b,c)"]
     C --> F["Manual profile points or baseline-constrained auto detection"]
@@ -420,7 +441,8 @@ flowchart LR
     G --> H["Two curve-baseline intersections"]
     H --> I["Orient tangents and baseline into liquid footprint"]
     I --> J["Left and right inside-liquid contact angles"]
-    J --> K["Matplotlib overlay and PNG export"]
+    J --> K["View renders Matplotlib overlay"]
+    K --> L["ViewModel worker encodes and writes PNG"]
 ```
 
 ### Project and session changes
@@ -435,4 +457,19 @@ flowchart LR
     F --> G["SessionRepository JSON in SQLite"]
 ```
 
-The signal/worker boundary is the central concurrency rule: GUI objects are updated on the Qt GUI thread, while camera I/O, serial connection/writes, directory scans, file operations, image decoding, video finalization, and numerical analysis run in worker threads.
+### Reopen media removed from the Sidebar
+
+```mermaid
+flowchart LR
+    A["Item context menu: Open Image / Open Video"] --> B["View file picker"]
+    B --> C["MainViewModel intent"]
+    C --> D["FunctionWorker"]
+    D --> E["ProjectManager path and type validation"]
+    E --> F["Remove normalized hidden-session path"]
+    F --> G["media_revealed signal"]
+    G --> H["Sidebar restores node"]
+    F --> I["open_editor_requested signal"]
+    I --> J["Lazy ImageEditor / VideoEditor opening"]
+```
+
+The signal/worker boundary is the central concurrency rule: Views update GUI objects only on the Qt GUI thread; ViewModels own task lifecycles and queued result signals; Models implement the domain operations. Camera I/O, serial connection/writes, directory scans, file operations, media-open validation, image decoding, video-path validation, video finalization, PNG writes, session shutdown persistence, and numerical analysis run in worker threads.

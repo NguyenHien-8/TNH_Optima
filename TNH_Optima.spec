@@ -30,6 +30,8 @@ a = Analysis(
         'sqlite3',
         'PyQt6.QtMultimedia',
         'PyQt6.QtMultimediaWidgets',
+        'send2trash.win.legacy',
+        'send2trash.win.modern',
     ],
     hookspath=[],
     hooksconfig={},

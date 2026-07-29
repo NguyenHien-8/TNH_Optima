@@ -9,15 +9,24 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt
 
 from App.Presentation.ViewModels.DialogViewModel.ConfigHardwareViewModel import ConfigHardwareViewModel
-from App.Presentation.ViewModels.Workers import FunctionWorker
 from App.Infrastructure.Helpers.ResourceHelper import apply_stylesheet
 
 class ConfigHardwareDialog(QDialog):
-    def __init__(self, hardware_manager, parent=None):
+    @property
+    def _workers(self):
+        """Compatibility view; worker ownership remains in the ViewModel."""
+        return self.view_model._workers
+
+    def __init__(self, hardware_view_model, parent=None):
         super().__init__(parent)
 
-        self.view_model = ConfigHardwareViewModel(hardware_manager)
-        self._workers = set()
+        self.view_model = (
+            hardware_view_model
+            if isinstance(hardware_view_model, ConfigHardwareViewModel)
+            else ConfigHardwareViewModel(hardware_view_model)
+        )
+        self._close_when_idle = False
+        self._port_before_scan = ""
 
         self.input_height = 28
         self.input_min_width = 180
@@ -28,6 +37,12 @@ class ConfigHardwareDialog(QDialog):
 
         self.load_hardware_dialog_style()   
         self.setup_ui()
+        self.view_model.ports_scanned.connect(self._on_ports_scanned)
+        self.view_model.connection_completed.connect(
+            self._on_connection_finished
+        )
+        self.view_model.error_occurred.connect(self._on_worker_error)
+        self.view_model.workers_idle.connect(self._on_workers_idle)
         self.load_current_settings()
 
     def load_hardware_dialog_style(self):
@@ -121,35 +136,18 @@ class ConfigHardwareDialog(QDialog):
         self.txt_period.setText(str(config.get("query_period", "")))
 
     def refresh_ports(self):
-        current = self.combo_port.currentText()
+        self._port_before_scan = self.combo_port.currentText()
         self.combo_port.clear()
         self.combo_port.setPlaceholderText("Scanning...")
         self.btn_refresh.setEnabled(False)
-        self._start_worker(
-            self.view_model.scan_ports,
-            lambda ports: self._on_ports_scanned(ports, current),
-        )
+        self.view_model.scan_ports()
 
-    def _on_ports_scanned(self, ports, current):
+    def _on_ports_scanned(self, ports):
         self.combo_port.addItems(ports)
-        if current:
-            self.combo_port.setEditText(current)
+        if self._port_before_scan:
+            self.combo_port.setEditText(self._port_before_scan)
         self.combo_port.setPlaceholderText("Select port...")
         self.btn_refresh.setEnabled(True)
-
-    def _start_worker(self, function, callback, *args):
-        worker = FunctionWorker(function, *args)
-        self._workers.add(worker)
-        worker.result_ready.connect(callback)
-        worker.error_occurred.connect(self._on_worker_error)
-        worker.finished.connect(lambda: self._cleanup_worker(worker))
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
-
-    def _cleanup_worker(self, worker):
-        self._workers.discard(worker)
-        if not any(item.isRunning() for item in self._workers):
-            self.btn_refresh.setEnabled(True)
 
     def _on_worker_error(self, message):
         self.btn_refresh.setEnabled(True)
@@ -177,9 +175,7 @@ class ConfigHardwareDialog(QDialog):
         self.btn_apply.setEnabled(False)
         self.btn_cancel.setEnabled(False)
         self.btn_apply.setText("Connecting...")
-        self._start_worker(
-            self.view_model.apply_connection,
-            lambda result: self._on_connection_finished(port, result),
+        self.view_model.apply_connection(
             port,
             baud,
             period,
@@ -200,12 +196,19 @@ class ConfigHardwareDialog(QDialog):
         )
 
     def on_cancel(self):
-        if any(worker.isRunning() for worker in self._workers):
+        if self.view_model.is_busy():
             return
         self.reject()
 
     def closeEvent(self, event):
-        if any(worker.isRunning() for worker in self._workers):
+        if not self.view_model.request_close():
+            self._close_when_idle = True
             event.ignore()
             return
         super().closeEvent(event)
+
+    def _on_workers_idle(self):
+        self.btn_refresh.setEnabled(True)
+        if self._close_when_idle:
+            self._close_when_idle = False
+            self.close()
