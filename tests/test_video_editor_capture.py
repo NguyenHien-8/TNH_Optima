@@ -14,6 +14,9 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtTest import QSignalSpy, QTest
 from PyQt6.QtWidgets import QApplication, QTabWidget
 
+from App.Presentation.ViewModels.FeatureViewModel.VideoEditorViewModel import (
+    VideoEditorViewModel,
+)
 from App.Presentation.Views.MainView import MainView
 from App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor import (
     VideoEditor,
@@ -78,6 +81,85 @@ class VideoEditorCaptureTests(unittest.TestCase):
         self.assertIsNone(editor.video_widget)
         self.assertFalse(editor.is_media_loading())
         self.assertEqual(editor.btn_play.toolTip(), "Play")
+        editor.close()
+
+    def test_open_video_and_capture_use_independent_recent_directories(self):
+        initial_open_dir = self.root / "Initial Open"
+        selected_open_dir = self.root / "Selected Open"
+        initial_capture_dir = self.root / "Initial Capture"
+        selected_capture_dir = self.root / "Selected Capture"
+        for directory in (
+            initial_open_dir,
+            selected_open_dir,
+            initial_capture_dir,
+            selected_capture_dir,
+        ):
+            directory.mkdir()
+
+        selected_video = selected_open_dir / "selected.mp4"
+        selected_video.touch()
+        capture_path = selected_capture_dir / "captured.png"
+        state = {
+            VideoEditorViewModel.OPEN_DIRECTORY: str(initial_open_dir),
+            VideoEditorViewModel.CAPTURE_DIRECTORY: str(
+                initial_capture_dir
+            ),
+        }
+
+        def remember(purpose, directory):
+            state[purpose] = directory
+
+        view_model = VideoEditorViewModel(
+            file_path=str(self.video_file),
+            recent_directory_provider=lambda purpose: state[purpose],
+            recent_directory_recorder=remember,
+        )
+        editor = VideoEditor(
+            str(self.video_file),
+            view_model=view_model,
+        )
+        editor.current_frame = self._frame()
+
+        with patch(
+            "App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor."
+            "QFileDialog.getOpenFileName",
+            return_value=(str(selected_video), "Videos (*.mp4)"),
+        ) as open_dialog:
+            editor.on_open_clicked()
+
+        self.assertEqual(
+            open_dialog.call_args.args[2],
+            str(initial_open_dir),
+        )
+        self.assertEqual(
+            state[view_model.OPEN_DIRECTORY],
+            str(selected_open_dir),
+        )
+        self.assertEqual(
+            state[view_model.CAPTURE_DIRECTORY],
+            str(initial_capture_dir),
+        )
+
+        with patch(
+            "App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor."
+            "QFileDialog.getSaveFileName",
+            return_value=(str(capture_path), "PNG Images (*.png)"),
+        ) as save_dialog:
+            editor.capture_image()
+            self._wait_for_workers(editor)
+
+        suggested_path = Path(save_dialog.call_args.args[2])
+        self.assertEqual(suggested_path.parent, initial_capture_dir)
+        self.assertTrue(suggested_path.name.startswith("capture_"))
+        self.assertEqual(
+            state[view_model.CAPTURE_DIRECTORY],
+            str(selected_capture_dir),
+        )
+        self.assertEqual(
+            state[view_model.OPEN_DIRECTORY],
+            str(selected_open_dir),
+        )
+        self.assertTrue(capture_path.is_file())
         editor.close()
 
     def test_many_restored_video_tabs_do_not_allocate_decoder_sources(self):
@@ -226,10 +308,18 @@ class VideoEditorCaptureTests(unittest.TestCase):
         self._wait_until(lambda: calls == ["next"])
 
     def test_project_video_capture_repairs_image_folder(self):
+        remembered = {}
+        view_model = VideoEditorViewModel(
+            file_path=str(self.video_file),
+            recent_directory_recorder=lambda purpose, directory: (
+                remembered.update({purpose: directory})
+            ),
+        )
         editor = VideoEditor(
             str(self.video_file).replace("\\", "/"),
             project_name="Project",
             project_path=str(self.project),
+            view_model=view_model,
         )
         editor.current_frame = self._frame()
         media_created = QSignalSpy(editor.media_created)
@@ -245,6 +335,10 @@ class VideoEditorCaptureTests(unittest.TestCase):
         self.assertEqual(len(captures), 1)
         self.assertEqual(len(media_created), 1)
         self.assertEqual(media_created[0][0:3], ["Project", "Item", "Image"])
+        self.assertEqual(
+            remembered[view_model.CAPTURE_DIRECTORY],
+            str(self.item / "Image"),
+        )
         warning.assert_not_called()
         editor.close()
 

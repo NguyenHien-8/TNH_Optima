@@ -1268,6 +1268,47 @@ class ProjectSidebar(QDockWidget):
             self._media_name_cache.pop(media_dir, None)
 
     @pyqtSlot(str, str)
+    def watch_item_media(self, project_name, folder_name):
+        items = self.project_tree.findItems(
+            project_name,
+            Qt.MatchFlag.MatchExactly,
+        )
+        if not items:
+            return
+        project_item = items[0]
+        for index in range(project_item.childCount()):
+            child = project_item.child(index)
+            if child.text(0) != folder_name:
+                continue
+            item_path = child.data(0, Qt.ItemDataRole.UserRole)
+            if item_path:
+                self._watch_item_media(
+                    item_path,
+                    project_name,
+                    folder_name,
+                )
+            return
+
+    @pyqtSlot(str)
+    def watch_project_media(self, project_name):
+        items = self.project_tree.findItems(
+            project_name,
+            Qt.MatchFlag.MatchExactly,
+        )
+        if not items:
+            return
+        project_item = items[0]
+        for index in range(project_item.childCount()):
+            child = project_item.child(index)
+            item_path = child.data(0, Qt.ItemDataRole.UserRole)
+            if item_path:
+                self._watch_item_media(
+                    item_path,
+                    project_name,
+                    child.text(0),
+                )
+
+    @pyqtSlot(str, str)
     def unwatch_item_media(self, project_name, folder_name):
         items = self.project_tree.findItems(project_name, Qt.MatchFlag.MatchExactly)
         if items:

@@ -244,6 +244,8 @@ class MainView(QMainWindow):
 
         self.view_model.request_unwatch_item.connect(self.sidebar.unwatch_item_media)
         self.view_model.request_unwatch_project.connect(self.sidebar.unwatch_project_media)
+        self.view_model.request_watch_item.connect(self.sidebar.watch_item_media)
+        self.view_model.request_watch_project.connect(self.sidebar.watch_project_media)
         self.view_model.request_close_editors_for_item.connect(self._close_editors_for_target)
 
         self.view_model.camera_status_changed.connect(self._update_camera_status)
@@ -257,6 +259,11 @@ class MainView(QMainWindow):
     @pyqtSlot(str, str)
     def _close_editors_for_target(self, project_name, item_name):
         tab_widget = self.editor_workspace.tab_widget
+        item_path = (
+            self.view_model.get_item_path(project_name, item_name)
+            if item_name
+            else None
+        )
         for i in range(tab_widget.count() - 1, -1, -1):
             widget = tab_widget.widget(i)
             p_name = widget.property("project_name")
@@ -265,12 +272,12 @@ class MainView(QMainWindow):
             if p_name == project_name:
                 if not item_name:
                     self._close_tab_safely(i)
-                else:
-                    if f_path:
-                        target_part = os.path.normpath(os.path.join(project_name, item_name))
-                        norm_f_path = os.path.normpath(f_path)
-                        if target_part in norm_f_path:
-                            self._close_tab_safely(i)
+                elif (
+                    f_path
+                    and item_path
+                    and is_path_within(f_path, item_path)
+                ):
+                    self._close_tab_safely(i)
 
     @pyqtSlot(str)
     def _stop_video_editor(self, full_path):
@@ -331,10 +338,15 @@ class MainView(QMainWindow):
             project_name,
             full_path,
         )
-        if not project_path or relative_path is None:
-            QMessageBox.warning(self, "Error", f"Cannot determine relative path for {full_path}")
-            return
-        self.pending_restore_editors.append((project_name, relative_path))
+        if project_path and relative_path is not None:
+            editor_context = (project_name, relative_path)
+        else:
+            # Media selected outside the active Project has no valid relative
+            # path. Open it as a standalone file while preserving the Project
+            # context for media that belongs to the active Project.
+            editor_context = (None, full_path)
+
+        self.pending_restore_editors.append(editor_context)
         if not self.restoring_in_progress:
             self.restoring_in_progress = True
             self._continue_session_restore()
@@ -410,7 +422,6 @@ class MainView(QMainWindow):
             self.create_calibration_tab_from(widget)
 
     def create_calibration_tab_from(self, source_widget):
-        from App.Presentation.ViewModels.FeatureViewModel.ImageEditorViewModel import ImageEditorViewModel
         from App.Presentation.Views.Widgets.FileEditorWorkspace.ImageEditor import ImageEditor
 
         project_name = source_widget.property("project_name")
@@ -420,7 +431,9 @@ class MainView(QMainWindow):
         base_name = file_name if file_name else "Image"
         new_tab_name = f"Calibration-{base_name}"
 
-        view_model = ImageEditorViewModel(project_name=project_name)
+        view_model = self.view_model.create_image_editor_view_model(
+            project_name=project_name
+        )
         editor = ImageEditor(view_model)
         editor.setProperty("project_name", project_name)
         editor.setProperty("file_name", new_tab_name)
@@ -482,8 +495,16 @@ class MainView(QMainWindow):
                 if action == "SAVE":
                     folder = QFileDialog.getExistingDirectory(self, "Choose a folder to save the project")
                     if folder:
-                        self.view_model.handle_save_as_project(project_name, folder)
-                        self.view_model.handle_delete_project(project_name, False)
+                        self.view_model.handle_save_as_project(
+                            project_name,
+                            folder,
+                            on_success=lambda name=project_name: (
+                                self.view_model.handle_delete_project(
+                                    name,
+                                    False,
+                                )
+                            ),
+                        )
                 elif action == "DONT_SAVE":
                     self.view_model.handle_delete_project(project_name, delete_from_disk=False)
             return
@@ -509,8 +530,17 @@ class MainView(QMainWindow):
                 if action == "SAVE":
                     folder = QFileDialog.getExistingDirectory(self, "Choose a folder to save the project")
                     if folder:
-                        self.view_model.handle_save_as_project(project_name, folder)
-                        self.view_model.handle_delete_item(project_name, folder_name, True)
+                        self.view_model.handle_save_as_project(
+                            project_name,
+                            folder,
+                            on_success=lambda name=project_name, item=folder_name: (
+                                self.view_model.handle_delete_item(
+                                    name,
+                                    item,
+                                    True,
+                                )
+                            ),
+                        )
                 elif action == "DONT_SAVE":
                     self.view_model.handle_delete_item(project_name, folder_name, delete_from_disk=False)
             return
@@ -627,10 +657,14 @@ class MainView(QMainWindow):
         if ext in video_exts:
             from App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor import VideoEditor
 
+            video_view_model = (
+                self.view_model.create_video_editor_view_model(full_path)
+            )
             editor = VideoEditor(
                 full_path,
                 project_name=project_name,
                 project_path=project_path,
+                view_model=video_view_model,
             )
             self._track_video_editor_loading(editor)
             editor.playback_requested.connect(
@@ -647,7 +681,6 @@ class MainView(QMainWindow):
             return
 
         if ext in image_exts:
-            from App.Presentation.ViewModels.FeatureViewModel.ImageEditorViewModel import ImageEditorViewModel
             from App.Presentation.Views.Widgets.FileEditorWorkspace.ImageEditor import ImageEditor
 
             media_dir = os.path.dirname(full_path)
@@ -655,7 +688,7 @@ class MainView(QMainWindow):
                 item_name = os.path.basename(os.path.dirname(media_dir))
             else:
                 item_name = os.path.basename(media_dir)
-            view_model = ImageEditorViewModel(
+            view_model = self.view_model.create_image_editor_view_model(
                 project_name=project_name,
                 item_name=item_name,
             )

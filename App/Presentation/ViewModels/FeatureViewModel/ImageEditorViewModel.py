@@ -7,27 +7,48 @@ import importlib
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QImage, QImageReader
+from App.Presentation.ViewModels.RecentDirectoryState import (
+    RecentDirectoryState,
+)
 from App.Presentation.ViewModels.Workers import FunctionWorker
 
 class ImageEditorViewModel(QObject):
+    OPEN_DIRECTORY = "image_open"
+    CAPTURE_DIRECTORY = "image_capture"
+    _DIRECTORY_PURPOSES = frozenset(
+        (OPEN_DIRECTORY, CAPTURE_DIRECTORY)
+    )
+
     image_loaded = pyqtSignal(QImage)
     error_occurred = pyqtSignal(str)
     workers_idle = pyqtSignal()
     loading_changed = pyqtSignal(str, bool)
     analysis_components_ready = pyqtSignal()
+    image_saved = pyqtSignal(str)
 
-    def __init__(self, project_name=None, item_name=None):
+    def __init__(
+        self,
+        project_name=None,
+        item_name=None,
+        recent_directory_provider=None,
+        recent_directory_recorder=None,
+    ):
         super().__init__()
         self.project_name = project_name
         self.item_name = item_name
         self.current_image_path = None
+        self._recent_directory_state = RecentDirectoryState(
+            self._DIRECTORY_PURPOSES,
+            recent_directory_provider,
+            recent_directory_recorder,
+        )
         self._workers = set()
         self._load_workers = set()
         self._load_generation = 0
         self._analysis_components_loaded = False
         self._analysis_worker = None
 
-    def load_image(self, file_path):
+    def load_image(self, file_path, remember_directory=True):
         if not isinstance(file_path, str) or not file_path:
             self.error_occurred.emit("Invalid image path.")
             return
@@ -41,6 +62,7 @@ class ImageEditorViewModel(QObject):
             lambda image: self._on_image_decoded(
                 generation,
                 file_path,
+                remember_directory,
                 image,
             ),
             track_loading=True,
@@ -53,13 +75,21 @@ class ImageEditorViewModel(QObject):
         reader.setAutoTransform(True)
         return reader.read()
 
-    def _on_image_decoded(self, generation, file_path, image):
+    def _on_image_decoded(
+        self,
+        generation,
+        file_path,
+        remember_directory,
+        image,
+    ):
         if generation != self._load_generation:
             return
         if image.isNull():
             self.error_occurred.emit(f"Cannot load image: {file_path}")
             return
         self.current_image_path = file_path
+        if remember_directory:
+            self.remember_media_path(file_path, self.OPEN_DIRECTORY)
         self.image_loaded.emit(image)
 
     def save_image(self, file_path, image):
@@ -70,10 +100,28 @@ class ImageEditorViewModel(QObject):
             def on_saved(success):
                 if not success:
                     self.error_occurred.emit(f"Failed to save image to {file_path}")
+                    return
+                self.remember_media_path(
+                    file_path,
+                    self.CAPTURE_DIRECTORY,
+                )
+                self.image_saved.emit(file_path)
 
             self._start_worker(lambda: image.save(file_path), on_saved)
         else:
             self.error_occurred.emit("No image loaded to save.")
+
+    def get_dialog_directory(self, purpose, fallback_path=None):
+        """Return a valid folder for one ImageEditor file dialog."""
+        return self._recent_directory_state.get(
+            purpose,
+            current_path=self.current_image_path,
+            fallback_path=fallback_path,
+        )
+
+    def remember_media_path(self, path, purpose):
+        """Remember a containing folder for Open or Capture independently."""
+        self._recent_directory_state.remember(purpose, path)
 
     def prepare_analysis_components(self):
         """Load optional scientific/plotting modules without freezing Qt."""

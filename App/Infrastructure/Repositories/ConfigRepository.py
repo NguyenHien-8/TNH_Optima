@@ -162,3 +162,64 @@ class ConfigRepository:
                 "DELETE FROM app_config WHERE key IN "
                 "('hardware_port', 'hardware_baud', 'hardware_period')"
             )
+
+    # --- Image editor config ---
+    _EDITOR_DIRECTORY_KEYS = {
+        "image_open": "image_editor_open_directory",
+        "image_capture": "image_editor_capture_directory",
+        "video_open": "video_editor_open_directory",
+        "video_capture": "video_editor_capture_directory",
+        "sidebar_image_open": "sidebar_item_open_image_directory",
+        "sidebar_video_open": "sidebar_item_open_video_directory",
+    }
+
+    def save_editor_directory(self, purpose: str, directory: str):
+        """Save one independent editor file-dialog directory."""
+        key = self._EDITOR_DIRECTORY_KEYS.get(purpose)
+        if key is None:
+            raise ValueError(f"Unknown editor directory purpose: {purpose}")
+        if not isinstance(directory, str) or not directory.strip():
+            raise ValueError("Editor directory must be a non-empty string.")
+        self.set_config(key, directory)
+
+    def load_editor_directories(self) -> Dict[str, Optional[str]]:
+        """Load all independent editor directories with legacy migration."""
+        keys = tuple(self._EDITOR_DIRECTORY_KEYS.values())
+        placeholders = ", ".join("?" for _key in keys)
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT key, value FROM app_config WHERE key IN "
+                f"({placeholders}, ?)",
+                (*keys, "image_editor_last_directory"),
+            ).fetchall()
+        values = dict(rows)
+        legacy_value = values.get("image_editor_last_directory")
+        return {
+            purpose: (
+                values.get(key)
+                or (
+                    legacy_value
+                    if purpose in ("image_open", "image_capture")
+                    else None
+                )
+            )
+            for purpose, key in self._EDITOR_DIRECTORY_KEYS.items()
+        }
+
+    def save_image_editor_directory(self, purpose: str, directory: str):
+        """Compatibility wrapper for ImageEditor directory settings."""
+        mapped_purpose = {
+            "open": "image_open",
+            "capture": "image_capture",
+        }.get(purpose)
+        if mapped_purpose is None:
+            raise ValueError(f"Unknown ImageEditor directory purpose: {purpose}")
+        self.save_editor_directory(mapped_purpose, directory)
+
+    def load_image_editor_directories(self) -> Dict[str, Optional[str]]:
+        """Compatibility view of the two ImageEditor directory settings."""
+        values = self.load_editor_directories()
+        return {
+            "open": values["image_open"],
+            "capture": values["image_capture"],
+        }

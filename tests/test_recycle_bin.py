@@ -183,6 +183,36 @@ class RecycleBinTests(unittest.TestCase):
 
         self.assertTrue(image_path.exists())
 
+    def test_helper_retries_transient_copy_engine_access_denied(self):
+        image_path = self.source_item / "Image" / "locked.png"
+        image_path.write_bytes(b"locked")
+        attempts = []
+        access_denied = OSError("source is temporarily locked")
+        access_denied.winerror = -2144927711  # 0x80270021
+
+        def fake_recycle(path):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise access_denied
+            os.remove(path)
+
+        with (
+            patch.object(RecycleBinHelper.sys, "platform", "win32"),
+            patch(
+                "send2trash.send2trash",
+                side_effect=fake_recycle,
+            ),
+            patch.object(RecycleBinHelper.time, "sleep") as sleep,
+        ):
+            recycled_path = RecycleBinHelper.move_to_recycle_bin(
+                image_path
+            )
+
+        self.assertEqual(recycled_path, os.path.abspath(image_path))
+        self.assertEqual(len(attempts), 2)
+        sleep.assert_called_once_with(0.1)
+        self.assertFalse(image_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

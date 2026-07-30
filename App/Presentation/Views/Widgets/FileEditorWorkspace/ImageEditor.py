@@ -27,6 +27,7 @@ class ImageEditor(QWidget):
         self.current_pixmap = None
         self._close_when_idle = False
         self._pending_image_path = None
+        self._pending_image_remember_directory = False
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("ImageEditor")
@@ -145,17 +146,23 @@ class ImageEditor(QWidget):
     def reset_zoom(self):
         self.canvas.reset_view()
 
-    def set_image_source(self, file_path):
+    def set_image_source(self, file_path, remember_directory=False):
         """Decode the source only when this editor becomes visible."""
         self._pending_image_path = file_path
+        self._pending_image_remember_directory = remember_directory
         QTimer.singleShot(0, self._load_pending_image)
 
     def _load_pending_image(self):
         if not self.isVisible() or not self._pending_image_path:
             return
         file_path = self._pending_image_path
+        remember_directory = self._pending_image_remember_directory
         self._pending_image_path = None
-        self.view_model.load_image(file_path)
+        self._pending_image_remember_directory = False
+        self.view_model.load_image(
+            file_path,
+            remember_directory=remember_directory,
+        )
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -163,8 +170,12 @@ class ImageEditor(QWidget):
 
     @pyqtSlot()
     def on_open_clicked(self):
+        initial_directory = self.view_model.get_dialog_directory(
+            self.view_model.OPEN_DIRECTORY,
+            self.property("full_path")
+        )
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Image/Video", "",
+            self, "Open Image/Video", initial_directory,
             "All Supported (*.png *.jpg *.jpeg *.bmp *.gif *.mp4 *.avi *.mov *.mkv *.flv);;"
             "Images (*.png *.jpg *.jpeg *.bmp *.gif);;Videos (*.mp4 *.avi *.mov *.mkv *.flv)"
         )
@@ -173,6 +184,10 @@ class ImageEditor(QWidget):
             video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.flv']
             if ext in video_exts:
                 # Emit signal requesting to open video
+                self.view_model.remember_media_path(
+                    file_path,
+                    self.view_model.OPEN_DIRECTORY,
+                )
                 self.sig_open_video.emit(self.property("project_name"), file_path)
             else:
                 self._pending_image_path = None
@@ -185,8 +200,12 @@ class ImageEditor(QWidget):
             QMessageBox.warning(self, "No Image", "No image available to capture/save.")
             return
 
+        initial_directory = self.view_model.get_dialog_directory(
+            self.view_model.CAPTURE_DIRECTORY,
+            self.property("full_path")
+        )
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Captured Image", "",
+            self, "Save Captured Image", initial_directory,
             "Images (*.png *.jpg *.jpeg *.bmp)"
         )
 
@@ -272,7 +291,7 @@ class ImageEditor(QWidget):
 
     def load_image_from_file(self, file_path):
         """Public method to load image, used by drag and drop."""
-        self.set_image_source(file_path)
+        self.set_image_source(file_path, remember_directory=True)
 
     def closeEvent(self, event):
         """Close all Droplet Analysis windows when this editor closes."""

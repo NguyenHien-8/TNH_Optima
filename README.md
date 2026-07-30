@@ -383,9 +383,10 @@ File Editor and Motor dialog commands run in serialized background queues. Stop 
 - Names reject empty values, path components, Windows-reserved filename characters, and trailing space/dot.
 - Canonical containment uses `realpath`, `normcase`, and `commonpath`, preventing `..` escapes and shared-prefix sibling confusion.
 - Copy collisions receive `_CopyN`; Cut/Move is implemented as copy followed by permanent cleanup of only the duplicated source.
-- Every Project, Item, Image, and Video delete dialog uses the existing disk-content checkbox. With the checkbox clear, the resource is removed from the Sidebar/workspace only and its content remains on disk. With it checked, the filesystem operation runs in a background worker and sends the file or directory to the Windows Recycle Bin. If recycling fails or its dependency is unavailable, the original content is retained; user-initiated deletion never falls back to permanent removal.
+- `Save As` validates and returns the destination path from its background worker. Any follow-up Close/Delete chosen from a temporary-resource prompt is queued only after Save As succeeds, preventing concurrent mutation of the Project registry.
+- Every Project, Item, Image, and Video delete dialog uses the existing disk-content checkbox. With the checkbox clear, the resource is removed from the Sidebar/workspace only and its content remains on disk. With it checked, the application releases media-directory watchers and editor handles before a background worker sends the file or directory to the Windows Recycle Bin. Transient Windows access/sharing violations receive bounded worker-thread retries. If recycling still fails or its dependency is unavailable, the original content is retained, watchers are restored, and user-initiated deletion never falls back to permanent removal.
 - Media files removed from the Sidebar are stored as normalized hidden paths in the session. Both the initial directory scan and later `QFileSystemWatcher` refreshes filter those paths, preventing a kept-on-disk file from reappearing unexpectedly.
-- An Item's context menu provides `Open Image...` and `Open Video...`. The View only gathers the selected path; `MainViewModel` dispatches validation to a worker, `ProjectManager` verifies that the file is directly inside the correct Item media folder, and a successful result removes its hidden-session entry before signals restore the Sidebar node and open the editor.
+- An Item's context menu provides `Open Image...` and `Open Video...`. The View only gathers the selected path; `MainViewModel` dispatches validation and import to a worker. `ProjectManager` accepts any existing file with a supported extension, copies media from elsewhere into the selected Item's matching `Image/` or `Video/` folder through a temporary file plus atomic replace, resolves collisions with `_CopyN`, and skips the copy when the file is already directly inside that folder. The imported copy is then revealed in the Sidebar and opened with the destination Project context.
 - UTF-8 text loads are capped at `20 MB`, rendered into the editor in `64 KiB` chunks, and saved atomically through a same-directory temporary file plus `os.replace`.
 - `SidebarViewModel` owns a media-scan queue limited to two workers, coalesces repeated watcher refreshes, and returns names to the View. `ProjectSidebar` caches each directory and renders at most 200 tree nodes per event-loop turn. `QFileSystemWatcher` handles external changes; explicit `media_created` signals make in-app captures visible immediately.
 - Sidebar drag/drop reorders Projects at the root or Items within the same Project. It changes display/session order only; it does not move directories on disk.
@@ -468,7 +469,7 @@ flowchart LR
     A["Item context menu: Open Image / Open Video"] --> B["View file picker"]
     B --> C["MainViewModel intent"]
     C --> D["FunctionWorker"]
-    D --> E["ProjectManager path and type validation"]
+    D --> E["Validate and atomically import into selected Item"]
     E --> F["Remove normalized hidden-session path"]
     F --> G["media_revealed signal"]
     G --> H["Sidebar restores node"]

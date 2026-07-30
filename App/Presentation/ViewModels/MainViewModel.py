@@ -27,6 +27,19 @@ from App.Models.Vision.CameraFrameDispatcher import CameraFrameDispatcher
 from App.Infrastructure.CrashHandler import log_exception
 
 class MainViewModel(QObject):
+    _EDITOR_DIRECTORY_PURPOSES = (
+        "image_open",
+        "image_capture",
+        "video_open",
+        "video_capture",
+        "sidebar_image_open",
+        "sidebar_video_open",
+    )
+    _SIDEBAR_MEDIA_DIRECTORY_PURPOSES = {
+        "image": "sidebar_image_open",
+        "video": "sidebar_video_open",
+    }
+
     status_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     project_added = pyqtSignal(str, str)
@@ -57,6 +70,8 @@ class MainViewModel(QObject):
     request_close_editors_for_item = pyqtSignal(str, str)  # project_name, folder_name
     request_unwatch_item = pyqtSignal(str, str)  # project_name, folder_name
     request_unwatch_project = pyqtSignal(str)    # project_name
+    request_watch_item = pyqtSignal(str, str)
+    request_watch_project = pyqtSignal(str)
 
     # Signal to stop video player before renaming a video file
     request_stop_video_editor = pyqtSignal(str)  # full_path
@@ -81,6 +96,17 @@ class MainViewModel(QObject):
         self._session_ui_timer = None
         self._saved_config_load_started = False
         self._deferred_hardware_config = None
+        self._editor_directories = {
+            purpose: None
+            for purpose in self._EDITOR_DIRECTORY_PURPOSES
+        }
+        self._editor_directories_changed = set()
+        self._editor_directories_persisted = {
+            purpose: None
+            for purpose in self._EDITOR_DIRECTORY_PURPOSES
+        }
+        self._editor_directory_save_worker = None
+        self._editor_directory_save_failed = {}
         self._shutdown_started = False
         self._shutdown_complete = False
         self._shutdown_camera_done = False
@@ -242,6 +268,33 @@ class MainViewModel(QObject):
             full_path=full_path,
             camera_manager=self.camera_manager,
             control_panel_manager=self.control_panel_manager,
+        )
+
+    def create_image_editor_view_model(
+        self,
+        project_name=None,
+        item_name=None,
+    ):
+        from App.Presentation.ViewModels.FeatureViewModel.ImageEditorViewModel import (
+            ImageEditorViewModel,
+        )
+
+        return ImageEditorViewModel(
+            project_name=project_name,
+            item_name=item_name,
+            recent_directory_provider=self.get_editor_directory,
+            recent_directory_recorder=self.remember_editor_directory,
+        )
+
+    def create_video_editor_view_model(self, file_path=None):
+        from App.Presentation.ViewModels.FeatureViewModel.VideoEditorViewModel import (
+            VideoEditorViewModel,
+        )
+
+        return VideoEditorViewModel(
+            file_path=file_path,
+            recent_directory_provider=self.get_editor_directory,
+            recent_directory_recorder=self.remember_editor_directory,
         )
 
     def create_hardware_config_view_model(self):
@@ -463,15 +516,28 @@ class MainViewModel(QObject):
         if not extensions or not project_path:
             return None
         patterns = " ".join(f"*{extension}" for extension in extensions)
+        default_directory = os.path.join(
+            project_path,
+            item_name,
+            media_type,
+        )
+        purpose = self._sidebar_media_directory_purpose(media_type)
+        recent_directory = (
+            self.get_editor_directory(purpose) if purpose else ""
+        )
         return {
             "title": f"Open {media_type} for '{item_name}'",
-            "directory": os.path.join(
-                project_path,
-                item_name,
-                media_type,
-            ),
+            "directory": recent_directory or default_directory,
             "filter": f"{media_type} Files ({patterns})",
         }
+
+    @classmethod
+    def _sidebar_media_directory_purpose(cls, media_type):
+        if not isinstance(media_type, str):
+            return None
+        return cls._SIDEBAR_MEDIA_DIRECTORY_PURPOSES.get(
+            media_type.casefold()
+        )
 
     def get_all_project_names(self) -> list:
         return list(self.project_manager.current_projects.keys())
@@ -487,13 +553,46 @@ class MainViewModel(QObject):
         except Exception:
             log_exception("Could not load saved hardware configuration")
             hw_config = {"port": "", "baud": 115200, "period": 100}
-        return cam_index, hw_config
+        try:
+            editor_directories = (
+                self.config_repo.load_editor_directories()
+            )
+        except Exception:
+            log_exception("Could not load recent editor directories")
+            editor_directories = {}
+        if not isinstance(editor_directories, dict):
+            editor_directories = {}
+        valid_editor_directories = {}
+        for purpose, directory in editor_directories.items():
+            valid_editor_directories[purpose] = (
+                directory
+                if isinstance(directory, str) and os.path.isdir(directory)
+                else None
+            )
+        return cam_index, hw_config, valid_editor_directories
 
     @pyqtSlot(object)
     def _apply_saved_configurations(self, result):
         if self._shutdown_started:
             return
-        cam_index, hw_config = result
+        cam_index, hw_config, editor_directories = result
+        if not isinstance(editor_directories, dict):
+            editor_directories = {}
+        for purpose in self._EDITOR_DIRECTORY_PURPOSES:
+            normalized_directory = self._normalize_editor_directory(
+                editor_directories.get(purpose)
+            )
+            if purpose not in self._editor_directories_changed:
+                self._editor_directories[purpose] = (
+                    normalized_directory
+                )
+                self._editor_directories_persisted[purpose] = (
+                    normalized_directory
+                )
+            else:
+                # A user selection made while startup configuration was
+                # loading is newer than the background result.
+                self._start_editor_directory_save()
         self.camera_manager.active_camera_index = cam_index
         port = hw_config.get("port", "")
         baud = hw_config.get("baud", 115200)
@@ -511,6 +610,86 @@ class MainViewModel(QObject):
             self.camera_manager.ensure_connected(cam_index)
         self.progress_update.emit("Configuration loaded.")
         self._connect_deferred_hardware()
+
+    @staticmethod
+    def _normalize_editor_directory(directory):
+        if not isinstance(directory, str) or not directory.strip():
+            return None
+        return os.path.abspath(os.path.normpath(directory))
+
+    def get_editor_directory(self, purpose):
+        if purpose not in self._EDITOR_DIRECTORY_PURPOSES:
+            return ""
+        return self._editor_directories[purpose] or ""
+
+    def remember_editor_directory(self, purpose, directory):
+        if purpose not in self._EDITOR_DIRECTORY_PURPOSES:
+            return
+        normalized_directory = self._normalize_editor_directory(
+            directory
+        )
+        if normalized_directory is None:
+            return
+        self._editor_directories[purpose] = normalized_directory
+        self._editor_directories_changed.add(purpose)
+        self._start_editor_directory_save()
+
+    def _start_editor_directory_save(self):
+        if self._editor_directory_save_worker is not None:
+            return
+
+        pending = next(
+            (
+                (purpose, self._editor_directories[purpose])
+                for purpose in self._EDITOR_DIRECTORY_PURPOSES
+                if (
+                    self._editor_directories[purpose] is not None
+                    and self._editor_directories[purpose]
+                    != self._editor_directories_persisted[purpose]
+                    and self._editor_directories[purpose]
+                    != self._editor_directory_save_failed.get(purpose)
+                )
+            ),
+            None,
+        )
+        if pending is None:
+            return
+        purpose, directory = pending
+
+        worker = FunctionWorker(
+            self.config_repo.save_editor_directory,
+            purpose,
+            directory,
+        )
+        self._editor_directory_save_worker = worker
+        worker.result_ready.connect(
+            lambda _result, kind=purpose, saved=directory: (
+                self._on_editor_directory_saved(kind, saved)
+            )
+        )
+        worker.error_occurred.connect(
+            lambda _message, kind=purpose, failed=directory: (
+                self._on_editor_directory_save_failed(kind, failed)
+            )
+        )
+        worker.finished.connect(
+            lambda current=worker: (
+                self._on_editor_directory_save_finished(current)
+            )
+        )
+        self.start_worker(worker)
+
+    def _on_editor_directory_saved(self, purpose, directory):
+        self._editor_directories_persisted[purpose] = directory
+        self._editor_directory_save_failed.pop(purpose, None)
+
+    def _on_editor_directory_save_failed(self, purpose, directory):
+        self._editor_directory_save_failed[purpose] = directory
+
+    def _on_editor_directory_save_finished(self, worker):
+        if self._editor_directory_save_worker is worker:
+            self._editor_directory_save_worker = None
+        self._start_editor_directory_save()
 
     @pyqtSlot()
     def start_deferred_initialization(self):
@@ -775,6 +954,7 @@ class MainViewModel(QObject):
 
     def handle_delete_item(self, project_name: str, folder_name: str, delete_from_disk: bool):
         if delete_from_disk:
+            self.request_unwatch_item.emit(project_name, folder_name)
             self.request_close_editors_for_item.emit(project_name, folder_name)
             item_path = self.get_item_path(project_name, folder_name)
 
@@ -788,6 +968,7 @@ class MainViewModel(QObject):
                         f"Item '{folder_name}' moved to Recycle Bin."
                     )
                 else:
+                    self.request_watch_item.emit(project_name, folder_name)
                     self.error_occurred.emit(message)
 
             self._run_background_task(
@@ -837,7 +1018,12 @@ class MainViewModel(QObject):
                 new_name,
             )
 
-    def handle_save_as_project(self, project_name: str, target_folder: str):
+    def handle_save_as_project(
+        self,
+        project_name: str,
+        target_folder: str,
+        on_success=None,
+    ):
         if not target_folder:
             return
         self.request_unwatch_project.emit(project_name)
@@ -845,20 +1031,35 @@ class MainViewModel(QObject):
         old_project_path = self.get_project_path(project_name)
 
         def save_project_and_list():
-            success, message = self.project_manager.save_project_as(
+            success, result = self.project_manager.save_project_as(
                 project_name, target_folder
             )
-            items = (
-                self.project_manager.get_project_items(project_name)
-                if success
-                else []
-            )
-            return success, message, items
+            if not success:
+                return False, result, [], ""
+
+            try:
+                new_path = os.path.abspath(os.fspath(result))
+            except (TypeError, ValueError):
+                return (
+                    False,
+                    "Project save returned an invalid destination path.",
+                    [],
+                    "",
+                )
+            if not os.path.isdir(new_path):
+                return (
+                    False,
+                    f"Project destination was not created: {new_path}",
+                    [],
+                    "",
+                )
+
+            items = self.project_manager.get_project_items(project_name)
+            return True, new_path, items, new_path
 
         def on_saved(result):
-            success, message, items = result
+            success, message, items, new_path = result
             if success:
-                new_path = self.project_manager.get_project_path(project_name)
                 self._remap_hidden_media_under(
                     old_project_path,
                     new_path,
@@ -872,7 +1073,10 @@ class MainViewModel(QObject):
                     )
                     self._add_opened_item(project_name, item_name)
                 self.status_message.emit(f"Project saved to {message}")
+                if callable(on_success):
+                    QTimer.singleShot(0, on_success)
             else:
+                self.request_watch_project.emit(project_name)
                 self.error_occurred.emit(message)
 
         self._run_background_task(
@@ -899,6 +1103,7 @@ class MainViewModel(QObject):
 
     def handle_delete_project(self, project_name: str, delete_from_disk: bool):
         if delete_from_disk:
+            self.request_unwatch_project.emit(project_name)
             self.request_close_editors_for_item.emit(project_name, "")
             project_path = self.get_project_path(project_name)
 
@@ -912,6 +1117,7 @@ class MainViewModel(QObject):
                         f"Project '{project_name}' moved to Recycle Bin."
                     )
                 else:
+                    self.request_watch_project.emit(project_name)
                     self.error_occurred.emit(message)
 
             self._run_background_task(
@@ -1147,13 +1353,27 @@ class MainViewModel(QObject):
         media_type,
         file_path,
     ):
-        def on_validated(result):
-            success, message, file_name, validated_path = result
+        directory_purpose = self._sidebar_media_directory_purpose(
+            media_type
+        )
+        selected_directory = (
+            os.path.dirname(os.path.abspath(file_path))
+            if isinstance(file_path, str) and file_path
+            else None
+        )
+
+        def on_imported(result):
+            success, message, file_name, imported_path, was_imported = result
             if not success:
                 self.error_occurred.emit(message)
                 return
+            if directory_purpose and selected_directory:
+                self.remember_editor_directory(
+                    directory_purpose,
+                    selected_directory,
+                )
 
-            normalized_path = self._normalize_media_path(validated_path)
+            normalized_path = self._normalize_media_path(imported_path)
             was_hidden = normalized_path in self.hidden_media_paths
             if was_hidden:
                 self.hidden_media_paths.discard(normalized_path)
@@ -1165,24 +1385,29 @@ class MainViewModel(QObject):
                 project_name,
                 item_name,
                 media_type,
-                validated_path,
+                imported_path,
             )
             self.open_editor_requested.emit(
-                validated_path,
+                imported_path,
                 project_name,
             )
-            self.status_message.emit(
-                (
-                    f"{media_type} '{file_name}' restored to the Sidebar."
-                    if was_hidden
-                    else f"{media_type} '{file_name}' opened."
+            if was_imported:
+                status = (
+                    f"{media_type} '{file_name}' imported into "
+                    f"Item '{item_name}' and opened."
                 )
-            )
+            elif was_hidden:
+                status = (
+                    f"{media_type} '{file_name}' restored to the Sidebar."
+                )
+            else:
+                status = f"{media_type} '{file_name}' opened."
+            self.status_message.emit(status)
 
         self._run_background_task(
-            f"Opening {media_type.lower()}...",
-            self.project_manager.validate_media_file_for_open,
-            on_validated,
+            f"Importing and opening {media_type.lower()}...",
+            self.project_manager.import_media_file_for_open,
+            on_imported,
             project_name,
             item_name,
             media_type,

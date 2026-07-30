@@ -8,6 +8,7 @@ import shutil
 import json
 import time
 import threading
+import tempfile
 from functools import wraps
 
 from App.Infrastructure.Helpers.PathHelper import (
@@ -440,24 +441,9 @@ class ProjectManager:
         media_type,
         file_path,
     ):
-        media_path = canonical_path(
-            self._get_media_path(project_name, item_name, media_type)
-        )
         selected_path = canonical_path(file_path)
-        if media_path is None:
-            return False, "Project/item media folder not found", "", ""
         if selected_path is None or not os.path.isfile(selected_path):
             return False, "Selected media file not found", "", ""
-        if (
-            os.path.normcase(os.path.dirname(selected_path))
-            != os.path.normcase(media_path)
-        ):
-            return (
-                False,
-                f"Select a file directly inside the item's {media_type} folder.",
-                "",
-                "",
-            )
 
         extension = os.path.splitext(selected_path)[1].lower()
         if extension not in self.get_media_extensions(media_type):
@@ -473,6 +459,128 @@ class ProjectManager:
             os.path.basename(selected_path),
             selected_path,
         )
+
+    @staticmethod
+    def _copy_media_with_unique_name(source_path, destination_dir):
+        """
+        Copy media through a non-media temporary file, then publish it atomically.
+
+        Keeping the temporary suffix unsupported prevents Sidebar scans from
+        rendering a partially copied image/video. The caller serializes Project
+        mutations, so collision resolution is deterministic within the app.
+        """
+        temp_path = None
+        try:
+            descriptor, temp_path = tempfile.mkstemp(
+                prefix=".tnh-optima-import-",
+                suffix=".tmp",
+                dir=destination_dir,
+            )
+            os.close(descriptor)
+            shutil.copy2(source_path, temp_path)
+
+            source_name = os.path.basename(source_path)
+            base_name, extension = os.path.splitext(source_name)
+            destination_name = source_name
+            destination_path = os.path.join(
+                destination_dir,
+                destination_name,
+            )
+            counter = 1
+            while os.path.exists(destination_path):
+                destination_name = (
+                    f"{base_name}_Copy{counter}{extension}"
+                )
+                destination_path = os.path.join(
+                    destination_dir,
+                    destination_name,
+                )
+                counter += 1
+
+            os.replace(temp_path, destination_path)
+            temp_path = None
+            return destination_name, canonical_path(destination_path)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    @_synchronized
+    def import_media_file_for_open(
+        self,
+        project_name,
+        item_name,
+        media_type,
+        file_path,
+    ):
+        validation = self.validate_media_file_for_open(
+            project_name,
+            item_name,
+            media_type,
+            file_path,
+        )
+        if not validation[0]:
+            return (*validation, False)
+
+        _, _, source_name, source_path = validation
+        destination_dir = canonical_path(
+            self._get_media_path(project_name, item_name, media_type)
+        )
+        if destination_dir is None:
+            return (
+                False,
+                "Project/item media folder not found",
+                "",
+                "",
+                False,
+            )
+
+        try:
+            os.makedirs(destination_dir, exist_ok=True)
+        except OSError as exc:
+            return (
+                False,
+                f"Cannot prepare the item's {media_type} folder: {exc}",
+                "",
+                "",
+                False,
+            )
+
+        source_dir = os.path.normcase(os.path.dirname(source_path))
+        target_dir = os.path.normcase(destination_dir)
+        if source_dir == target_dir:
+            return (
+                True,
+                f"{media_type} file ready",
+                source_name,
+                source_path,
+                False,
+            )
+
+        try:
+            imported_name, imported_path = (
+                self._copy_media_with_unique_name(
+                    source_path,
+                    destination_dir,
+                )
+            )
+            return (
+                True,
+                f"{media_type} imported successfully",
+                imported_name,
+                imported_path,
+                True,
+            )
+        except (OSError, shutil.Error) as exc:
+            return (
+                False,
+                f"Could not import {media_type.lower()} file: {exc}",
+                "",
+                "",
+                False,
+            )
 
     @_synchronized
     def copy_file(self, src_project, src_item, src_media, src_file,

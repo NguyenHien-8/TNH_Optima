@@ -73,6 +73,56 @@ class DatabaseStorageTests(unittest.TestCase):
         self.assertTrue(config_path.is_file())
         self.assertTrue(session_path.is_file())
 
+    def test_editor_directories_persist_independently(self):
+        config_path = self.root / "config" / "ConfigStorage.db"
+        directories = {
+            "image_open": self.root / "Image Opened",
+            "image_capture": self.root / "Image Captured",
+            "video_open": self.root / "Video Opened",
+            "video_capture": self.root / "Video Captured",
+            "sidebar_image_open": self.root / "Sidebar Image Opened",
+            "sidebar_video_open": self.root / "Sidebar Video Opened",
+        }
+        for purpose, directory in directories.items():
+            directory.mkdir()
+            ConfigRepository(str(config_path)).save_editor_directory(
+                purpose,
+                str(directory),
+            )
+
+        restored_repository = ConfigRepository(str(config_path))
+        self.assertEqual(
+            restored_repository.load_editor_directories(),
+            {
+                purpose: str(directory)
+                for purpose, directory in directories.items()
+            },
+        )
+
+    def test_legacy_image_editor_directory_is_used_only_as_migration_fallback(self):
+        config_path = self.root / "config" / "ConfigStorage.db"
+        repository = ConfigRepository(str(config_path))
+        repository.set_config(
+            "image_editor_last_directory",
+            str(self.root / "Legacy"),
+        )
+        repository.save_editor_directory(
+            "image_open",
+            str(self.root / "Opened"),
+        )
+
+        self.assertEqual(
+            repository.load_editor_directories(),
+            {
+                "image_open": str(self.root / "Opened"),
+                "image_capture": str(self.root / "Legacy"),
+                "video_open": None,
+                "video_capture": None,
+                "sidebar_image_open": None,
+                "sidebar_video_open": None,
+            },
+        )
+
 
 class InstallerValidationTests(unittest.TestCase):
     def setUp(self):

@@ -8,11 +8,20 @@ import os
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QImage
 
+from App.Presentation.ViewModels.RecentDirectoryState import (
+    RecentDirectoryState,
+)
 from App.Presentation.ViewModels.Workers import FunctionWorker
 
 
 class VideoEditorViewModel(QObject):
     """Validate video sources away from the GUI thread."""
+
+    OPEN_DIRECTORY = "video_open"
+    CAPTURE_DIRECTORY = "video_capture"
+    _DIRECTORY_PURPOSES = frozenset(
+        (OPEN_DIRECTORY, CAPTURE_DIRECTORY)
+    )
 
     source_ready = pyqtSignal(str)
     source_error = pyqtSignal(str)
@@ -20,9 +29,20 @@ class VideoEditorViewModel(QObject):
     capture_error = pyqtSignal(str)
     workers_idle = pyqtSignal()
 
-    def __init__(self, file_path=None, parent=None):
+    def __init__(
+        self,
+        file_path=None,
+        parent=None,
+        recent_directory_provider=None,
+        recent_directory_recorder=None,
+    ):
         super().__init__(parent)
         self.file_path = file_path
+        self._recent_directory_state = RecentDirectoryState(
+            self._DIRECTORY_PURPOSES,
+            recent_directory_provider,
+            recent_directory_recorder,
+        )
         self._generation = 0
         self._workers = set()
         self._validation_workers = set()
@@ -30,6 +50,18 @@ class VideoEditorViewModel(QObject):
     def set_video(self, file_path):
         self.cancel_pending()
         self.file_path = file_path
+
+    def get_dialog_directory(self, purpose, fallback_path=None):
+        """Return the independent Open Video or Capture Image directory."""
+        return self._recent_directory_state.get(
+            purpose,
+            current_path=self.file_path,
+            fallback_path=fallback_path,
+        )
+
+    def remember_media_path(self, path, purpose):
+        """Remember a successful VideoEditor open or capture location."""
+        self._recent_directory_state.remember(purpose, path)
 
     def cancel_pending(self):
         self._generation += 1
@@ -93,14 +125,17 @@ class VideoEditorViewModel(QObject):
 
         worker = FunctionWorker(save_image)
         self._workers.add(worker)
-        worker.result_ready.connect(
-            lambda result: self.capture_saved.emit(result[0], result[1])
-        )
+        worker.result_ready.connect(self._on_capture_saved)
         worker.error_occurred.connect(self.capture_error)
         worker.finished.connect(lambda: self._finish_worker(worker))
         worker.finished.connect(worker.deleteLater)
         worker.start()
         return True
+
+    def _on_capture_saved(self, result):
+        file_path, item_path = result
+        self.remember_media_path(file_path, self.CAPTURE_DIRECTORY)
+        self.capture_saved.emit(file_path, item_path)
 
     def _finish_worker(self, worker):
         self._workers.discard(worker)

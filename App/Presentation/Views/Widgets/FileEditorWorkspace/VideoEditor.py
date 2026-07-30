@@ -391,11 +391,19 @@ class VideoEditor(QWidget):
 
     @pyqtSlot()
     def on_open_clicked(self):
+        initial_directory = self.view_model.get_dialog_directory(
+            self.view_model.OPEN_DIRECTORY,
+            self.file_path,
+        )
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Video", "",
+            self, "Open Video", initial_directory,
             "Videos (*.mp4 *.avi *.mov *.mkv *.flv)"
         )
         if file_path:
+            self.view_model.remember_media_path(
+                file_path,
+                self.view_model.OPEN_DIRECTORY,
+            )
             self.sig_open_video.emit(self.project_name, file_path)
 
     @pyqtSlot()
@@ -480,10 +488,19 @@ class VideoEditor(QWidget):
         if image_folder:
             filepath = os.path.join(image_folder, filename)
         else:
+            initial_directory = self.view_model.get_dialog_directory(
+                self.view_model.CAPTURE_DIRECTORY,
+                self.file_path,
+            )
+            suggested_path = (
+                os.path.join(initial_directory, filename)
+                if initial_directory
+                else filename
+            )
             filepath, _ = QFileDialog.getSaveFileName(
                 self,
                 "Save Captured Image",
-                filename,
+                suggested_path,
                 "PNG Images (*.png)",
             )
             if not filepath:
