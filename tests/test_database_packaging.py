@@ -80,6 +80,7 @@ class DatabaseStorageTests(unittest.TestCase):
             "image_capture": self.root / "Image Captured",
             "video_open": self.root / "Video Opened",
             "video_capture": self.root / "Video Captured",
+            "droplet_analysis_save": self.root / "Analysis Saved",
             "sidebar_image_open": self.root / "Sidebar Image Opened",
             "sidebar_video_open": self.root / "Sidebar Video Opened",
         }
@@ -118,6 +119,7 @@ class DatabaseStorageTests(unittest.TestCase):
                 "image_capture": str(self.root / "Legacy"),
                 "video_open": None,
                 "video_capture": None,
+                "droplet_analysis_save": None,
                 "sidebar_image_open": None,
                 "sidebar_video_open": None,
             },

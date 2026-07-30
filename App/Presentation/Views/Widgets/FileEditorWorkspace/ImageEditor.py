@@ -241,9 +241,10 @@ class ImageEditor(QWidget):
 
         try:
             from App.Presentation.Views.Widgets.DropletAnalysisWindow import DropletAnalysisWindow
-            from App.Presentation.ViewModels.FeatureViewModel.DropletAnalysisViewModel import DropletAnalysisViewModel
 
-            droplet_view_model = DropletAnalysisViewModel()
+            droplet_view_model = (
+                self.view_model.create_droplet_analysis_view_model()
+            )
             source_image_path = getattr(
                 self.view_model, "current_image_path", None
             ) or self.property("full_path")

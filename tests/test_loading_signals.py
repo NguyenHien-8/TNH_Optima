@@ -62,6 +62,7 @@ class LoadingSignalTests(unittest.TestCase):
                 "image_capture": root / "Image Captured",
                 "video_open": root / "Video Opened",
                 "video_capture": root / "Video Captured",
+                "droplet_analysis_save": root / "Analysis Saved",
                 "sidebar_image_open": root / "Sidebar Image Opened",
                 "sidebar_video_open": root / "Sidebar Video Opened",
             }
@@ -384,6 +385,28 @@ class LoadingSignalTests(unittest.TestCase):
 
         self.assertTrue(view_model._analysis_components_loaded)
         self.assertIsNone(view_model._analysis_worker)
+
+    def test_image_editor_passes_saved_directory_context_to_analysis(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = {"droplet_analysis_save": temp_dir}
+            image_view_model = ImageEditorViewModel(
+                recent_directory_provider=lambda purpose: state.get(
+                    purpose
+                ),
+                recent_directory_recorder=lambda purpose, directory: (
+                    state.update({purpose: directory})
+                ),
+            )
+
+            analysis_view_model = (
+                image_view_model.create_droplet_analysis_view_model()
+            )
+
+            self.assertEqual(
+                analysis_view_model.get_save_dialog_directory(),
+                temp_dir,
+            )
+            self.assertTrue(analysis_view_model.request_close())
 
     def test_hidden_image_tab_defers_decode_until_shown(self):
         with tempfile.TemporaryDirectory() as temp_dir:

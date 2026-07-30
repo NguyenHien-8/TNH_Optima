@@ -32,6 +32,7 @@ class MainViewModel(QObject):
         "image_capture",
         "video_open",
         "video_capture",
+        "droplet_analysis_save",
         "sidebar_image_open",
         "sidebar_video_open",
     )

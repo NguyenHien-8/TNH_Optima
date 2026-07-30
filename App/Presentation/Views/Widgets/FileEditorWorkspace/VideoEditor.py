@@ -412,17 +412,6 @@ class VideoEditor(QWidget):
             QMessageBox.warning(self, "No Video", "No video is currently open.")
             return
 
-        item_path = None
-        if self.project_name and self.project_path:
-            item_path = project_media_item_path(
-                self.file_path,
-                "Video",
-                self.project_path,
-            )
-        image_folder = (
-            os.path.join(item_path, "Image") if item_path else None
-        )
-
         # Get frame from video sink if available
         pixmap = None
         if self.current_frame and not self.current_frame.isNull():
@@ -434,6 +423,50 @@ class VideoEditor(QWidget):
         if pixmap is None or pixmap.isNull():
             QMessageBox.warning(self, "Capture Failed", "Cannot capture image from video.")
             return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"capture_{timestamp}.png"
+        initial_directory = self.view_model.get_dialog_directory(
+            self.view_model.CAPTURE_DIRECTORY,
+            self.file_path,
+        )
+        suggested_path = (
+            os.path.join(initial_directory, filename)
+            if initial_directory
+            else filename
+        )
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Captured Image",
+            suggested_path,
+            "PNG Images (*.png)",
+        )
+        if not filepath:
+            return
+        if not os.path.splitext(filepath)[1]:
+            filepath += ".png"
+
+        # Only notify the current Project Item when the user explicitly saves
+        # into that Item's Image folder. An arbitrary Save As destination must
+        # not be inserted into the Project tree.
+        item_path = None
+        if self.project_name and self.project_path:
+            project_item_path = project_media_item_path(
+                self.file_path,
+                "Video",
+                self.project_path,
+            )
+            if project_item_path:
+                selected_folder = os.path.normcase(
+                    os.path.abspath(os.path.dirname(filepath))
+                )
+                project_image_folder = os.path.normcase(
+                    os.path.abspath(
+                        os.path.join(project_item_path, "Image")
+                    )
+                )
+                if selected_folder == project_image_folder:
+                    item_path = project_item_path
 
         # --- BEGIN MODIFICATION: DRAW TIMESTAMP ON IMAGE ---
         
@@ -483,37 +516,11 @@ class VideoEditor(QWidget):
 
         # --- END MODIFICATION ---
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"capture_{timestamp}.png"
-        if image_folder:
-            filepath = os.path.join(image_folder, filename)
-        else:
-            initial_directory = self.view_model.get_dialog_directory(
-                self.view_model.CAPTURE_DIRECTORY,
-                self.file_path,
-            )
-            suggested_path = (
-                os.path.join(initial_directory, filename)
-                if initial_directory
-                else filename
-            )
-            filepath, _ = QFileDialog.getSaveFileName(
-                self,
-                "Save Captured Image",
-                suggested_path,
-                "PNG Images (*.png)",
-            )
-            if not filepath:
-                return
-            if not os.path.splitext(filepath)[1]:
-                filepath += ".png"
-
         image = pixmap.toImage()
         self.view_model.save_capture(
             image,
             filepath,
             item_path=item_path,
-            image_folder=image_folder,
         )
 
     def _on_capture_saved(self, filepath, project_item_path=None):

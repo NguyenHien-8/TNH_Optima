@@ -37,6 +37,8 @@ class ImageEditorViewModel(QObject):
         self.project_name = project_name
         self.item_name = item_name
         self.current_image_path = None
+        self._recent_directory_provider = recent_directory_provider
+        self._recent_directory_recorder = recent_directory_recorder
         self._recent_directory_state = RecentDirectoryState(
             self._DIRECTORY_PURPOSES,
             recent_directory_provider,
@@ -122,6 +124,17 @@ class ImageEditorViewModel(QObject):
     def remember_media_path(self, path, purpose):
         """Remember a containing folder for Open or Capture independently."""
         self._recent_directory_state.remember(purpose, path)
+
+    def create_droplet_analysis_view_model(self):
+        """Create Analysis state with the application's SQLite preferences."""
+        from App.Presentation.ViewModels.FeatureViewModel.DropletAnalysisViewModel import (
+            DropletAnalysisViewModel,
+        )
+
+        return DropletAnalysisViewModel(
+            recent_directory_provider=self._recent_directory_provider,
+            recent_directory_recorder=self._recent_directory_recorder,
+        )
 
     def prepare_analysis_components(self):
         """Load optional scientific/plotting modules without freezing Qt."""

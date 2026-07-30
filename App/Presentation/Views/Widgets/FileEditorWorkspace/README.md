@@ -18,8 +18,12 @@ Editors and control widgets for live camera, still images, saved videos, and mot
 - FileEditor emits only UI events; `FileEditorViewModel` owns the media/control workflow.
 - ImageEditor and VideoEditor track save/decode workers; close is deferred until `finished`.
 - ImageEditor clears the Qt canvas and closes child analysis windows.
+- Droplet Analysis PNGs are exported at the active 5 x 3 axes bounds without Matplotlib canvas margins; ImageCanvas maps that content directly onto its matching plot rectangle, so saved results fit on first open and continue to fit after resize/reset without an extra decode or GUI-thread scaling pass.
 - VideoEditor creates `QMediaPlayer`/`QVideoWidget` only after the source is validated by the ViewModel; on close, it disconnects the video sink, clears the media source, and clears the frame.
-- Captures from live camera or VideoEditor both emit explicit media notifications; files created externally are still synchronized by the watcher.
+- Live-camera captures emit explicit media notifications. VideoEditor always
+  opens Save As; it emits the notification only when the selected destination
+  is the current Item's `Image` folder. Files created externally are still
+  synchronized by the watcher.
 - Droplet Auto Detect is enabled only after a baseline exists; segmentation, substrate-tail filtering, contact-endpoint restoration, and point sampling run in an analysis worker so the UI thread is not blocked.
 - ImageEditor resolves the top-level MainView as the logical owner of Droplet Analysis and passes `full_path` separately as save context. MainView actively coordinates minimize while the native window keeps independent restore state; Win32 taskbar style creates grouped thumbnails; closing the window deletes the object and clears references through the `destroyed` signal.
 
@@ -28,7 +32,8 @@ Editors and control widgets for live camera, still images, saved videos, and mot
 1. Camera dispatcher → `FileEditorViewModel` → `FileEditor` preview.
 2. Capture → background PNG save → `media_created(Image)` → SideBar.
 3. Record frames → recorder queue → MP4 finalize → `media_created(Video)` → SideBar.
-4. VideoEditor capture frame → background PNG save → `media_created(Image)` → SideBar.
+4. VideoEditor capture frame → Save As → background PNG save → optional
+   `media_created(Image)` for the current Item → SideBar.
 5. Sidebar image/video file → MainView → ImageEditor/VideoEditor.
 6. ImageEditor -> DropletAnalysisWindow -> baseline coefficients/anchors + image -> analysis worker -> liquid-cap points plus two contact endpoints -> rendered result.
 7. DropletAnalysisWindow show -> register with MainView + grouped taskbar thumbnail -> MainView minimize pulls the window down, while clicking that thumbnail restores only that window.

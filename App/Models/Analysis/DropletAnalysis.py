@@ -881,6 +881,568 @@ def _longest_valid_contour_arc(
     return max(runs, key=run_score)
 
 
+def _baseline_contact_support(
+    contour_points: np.ndarray,
+    clearance_px: np.ndarray,
+    contact_band_px: float,
+) -> Optional[Tuple[float, float, float]]:
+    """
+    Return evidence that a contour is a sessile cap attached to the baseline.
+
+    A valid droplet contour approaches the baseline on both sides of a
+    meaningful horizontal footprint. A suspended needle, timestamp, or
+    top-border component has no such two-sided support.
+    """
+    if len(contour_points) < 6 or len(clearance_px) != len(contour_points):
+        return None
+
+    near_mask = (
+        np.isfinite(clearance_px)
+        & (clearance_px >= -1.0)
+        & (clearance_px <= float(contact_band_px))
+    )
+    near_points = contour_points[near_mask]
+    if len(near_points) < 2:
+        return None
+
+    contour_x_min = float(np.min(contour_points[:, 0]))
+    contour_x_max = float(np.max(contour_points[:, 0]))
+    contour_x_span = contour_x_max - contour_x_min
+    if contour_x_span <= 1.0:
+        return None
+
+    near_x_min = float(np.min(near_points[:, 0]))
+    near_x_max = float(np.max(near_points[:, 0]))
+    near_x_span = near_x_max - near_x_min
+    minimum_contact_span = max(4.0, contour_x_span * 0.35)
+    if near_x_span < minimum_contact_span:
+        return None
+
+    midpoint = 0.5 * (contour_x_min + contour_x_max)
+    side_margin = max(1.0, contour_x_span * 0.08)
+    has_left_contact = np.any(near_points[:, 0] <= midpoint - side_margin)
+    has_right_contact = np.any(near_points[:, 0] >= midpoint + side_margin)
+    if not has_left_contact or not has_right_contact:
+        return None
+
+    return near_x_min, near_x_max, near_x_span / contour_x_span
+
+
+def _anchor_segment_score(
+    arc: np.ndarray,
+    contact_hint_points_px: Optional[np.ndarray],
+    image_width_px: int,
+) -> Optional[float]:
+    """Validate a candidate against the segment used to define the baseline."""
+    if contact_hint_points_px is None:
+        return 0.0
+
+    hints = contact_hint_points_px[np.argsort(contact_hint_points_px[:, 0])]
+    hint_span = float(hints[1, 0] - hints[0, 0])
+    if hint_span < max(4.0, image_width_px * 0.01):
+        return 0.0
+
+    arc_x_min = float(np.min(arc[:, 0]))
+    arc_x_max = float(np.max(arc[:, 0]))
+    arc_span = arc_x_max - arc_x_min
+    if arc_span <= 1.0:
+        return None
+
+    tolerance = max(8.0, hint_span * 0.20, image_width_px * 0.015)
+    if (
+        arc_x_max < hints[0, 0] - tolerance
+        or arc_x_min > hints[1, 0] + tolerance
+    ):
+        return None
+
+    overlap = max(
+        0.0,
+        min(arc_x_max, float(hints[1, 0]))
+        - max(arc_x_min, float(hints[0, 0])),
+    )
+    return min(1.0, overlap / arc_span)
+
+
+def _adaptive_silhouette_threshold(
+    masked_image: np.ndarray,
+    above_baseline: np.ndarray,
+) -> Tuple[float, np.ndarray]:
+    """
+    Build a permissive silhouette mask without using it as the final edge.
+
+    Global Otsu is a useful foreground seed, but on a soft optical interface
+    its threshold commonly lies inside the liquid. Moving the localization
+    threshold towards the measured background retains the complete outer
+    transition. The exact interface is recovered later from the source-image
+    gradient, so this mask is intentionally used only for candidate discovery.
+    """
+    otsu_value, _ = cv2.threshold(
+        masked_image,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+    )
+    valid_pixels = masked_image[above_baseline]
+    brighter_pixels = valid_pixels[valid_pixels > otsu_value]
+    if brighter_pixels.size >= 64:
+        background_level = float(np.percentile(brighter_pixels, 80.0))
+    elif valid_pixels.size:
+        background_level = float(np.percentile(valid_pixels, 90.0))
+    else:
+        background_level = 255.0
+
+    contrast_span = max(0.0, background_level - float(otsu_value))
+    silhouette_threshold = float(otsu_value) + 0.50 * contrast_span
+    silhouette_threshold = float(
+        np.clip(
+            silhouette_threshold,
+            float(otsu_value),
+            max(float(otsu_value), background_level - 2.0),
+        )
+    )
+    _, binary = cv2.threshold(
+        masked_image,
+        silhouette_threshold,
+        255,
+        cv2.THRESH_BINARY_INV,
+    )
+    return silhouette_threshold, binary
+
+
+def _outward_contour_normals(
+    contour_arc: np.ndarray,
+    baseline_coeffs: Tuple[float, float, float],
+    scale_x: float,
+    scale_y: float,
+    physical_height: float,
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Return outward unit normals, clearance, and tangent validity."""
+    points = contour_arc.astype(np.float64)
+    point_count = len(points)
+    if point_count < 3:
+        return None
+    clearance_px = _baseline_clearance(
+        points,
+        baseline_coeffs,
+        scale_x,
+        scale_y,
+        physical_height,
+    ) / scale_y
+    cap_height_px = float(np.max(clearance_px))
+    if not np.isfinite(cap_height_px) or cap_height_px <= 2.0:
+        return None
+
+    tangent_window = min(4, max(1, point_count // 40))
+    previous_indices = np.maximum(
+        np.arange(point_count) - tangent_window,
+        0,
+    )
+    next_indices = np.minimum(
+        np.arange(point_count) + tangent_window,
+        point_count - 1,
+    )
+    tangents = points[next_indices] - points[previous_indices]
+    tangent_lengths = np.hypot(tangents[:, 0], tangents[:, 1])
+    usable_tangent = tangent_lengths > 1e-9
+    if not np.any(usable_tangent):
+        return None
+    tangent_lengths[~usable_tangent] = 1.0
+    tangents /= tangent_lengths[:, None]
+    normals = np.column_stack((-tangents[:, 1], tangents[:, 0]))
+
+    x_center = 0.5 * (
+        float(np.min(points[:, 0])) + float(np.max(points[:, 0]))
+    )
+    a_line, b_line, c_line = baseline_coeffs
+    baseline_y_physical = -(
+        a_line * (x_center * scale_x) + c_line
+    ) / b_line
+    baseline_y_pixel = (
+        physical_height - baseline_y_physical
+    ) / scale_y
+    interior_reference = np.array(
+        [x_center, baseline_y_pixel - 0.25 * cap_height_px],
+        dtype=np.float64,
+    )
+    inward_normals = (
+        np.sum(normals * (points - interior_reference), axis=1) < 0.0
+    )
+    normals[inward_normals] *= -1.0
+    return normals, clearance_px, usable_tangent
+
+
+def _refine_contour_to_source_gradient(
+    image: np.ndarray,
+    contour_arc: np.ndarray,
+    baseline_coeffs: Tuple[float, float, float],
+    scale_x: float,
+    scale_y: float,
+    physical_height: float,
+) -> np.ndarray:
+    """
+    Move a localized silhouette onto the source-image optical interface.
+
+    Each contour sample searches along its outward normal for the strongest
+    dark-to-light transition. Searching in a short, image-scaled band prevents
+    internal highlights or distant background structures from stealing a
+    point. Median filtering only the normal offsets suppresses isolated texture
+    responses while preserving the original cap geometry and contact points.
+    """
+    if contour_arc is None or len(contour_arc) < 5:
+        return contour_arc
+
+    points = contour_arc.astype(np.float64)
+    point_count = len(points)
+    normal_data = _outward_contour_normals(
+        points,
+        baseline_coeffs,
+        scale_x,
+        scale_y,
+        physical_height,
+    )
+    if normal_data is None:
+        return points
+    normals, clearance_px, usable_tangent = normal_data
+    cap_height_px = float(np.max(clearance_px))
+
+    search_radius_px = float(
+        np.clip(0.06 * cap_height_px, 4.0, 16.0)
+    )
+    sample_step_px = 0.5
+    offsets = np.arange(
+        -search_radius_px,
+        search_radius_px + 0.5 * sample_step_px,
+        sample_step_px,
+        dtype=np.float32,
+    )
+    sample_x = (
+        points[:, 0, None] + normals[:, 0, None] * offsets[None, :]
+    ).astype(np.float32)
+    sample_y = (
+        points[:, 1, None] + normals[:, 1, None] * offsets[None, :]
+    ).astype(np.float32)
+
+    gradient_source = cv2.GaussianBlur(image, (3, 3), 0)
+    gradient_x = cv2.Scharr(
+        gradient_source,
+        cv2.CV_32F,
+        1,
+        0,
+    )
+    gradient_y = cv2.Scharr(
+        gradient_source,
+        cv2.CV_32F,
+        0,
+        1,
+    )
+    sampled_gradient_x = cv2.remap(
+        gradient_x,
+        sample_x,
+        sample_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    sampled_gradient_y = cv2.remap(
+        gradient_y,
+        sample_x,
+        sample_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    outward_response = (
+        sampled_gradient_x * normals[:, 0, None]
+        + sampled_gradient_y * normals[:, 1, None]
+    )
+
+    a_line, b_line, c_line = baseline_coeffs
+    x_physical = sample_x.astype(np.float64) * scale_x
+    baseline_y = -(
+        a_line * x_physical + c_line
+    ) / b_line
+    sample_y_physical = physical_height - (
+        sample_y.astype(np.float64) * scale_y
+    )
+    valid_samples = (
+        np.isfinite(outward_response)
+        & (sample_x >= 0.0)
+        & (sample_x <= image.shape[1] - 1)
+        & (sample_y >= 0.0)
+        & (sample_y <= image.shape[0] - 1)
+        & (sample_y_physical > baseline_y + 0.25 * scale_y)
+    )
+    outward_response[~valid_samples] = -np.inf
+
+    best_indices = np.argmax(outward_response, axis=1)
+    row_indices = np.arange(point_count)
+    best_response = outward_response[row_indices, best_indices]
+    finite_positive = best_response[
+        np.isfinite(best_response) & (best_response > 0.0)
+    ]
+    if finite_positive.size == 0:
+        return points
+    minimum_response = max(
+        8.0,
+        float(np.percentile(finite_positive, 20.0)) * 0.20,
+    )
+
+    normal_offsets = offsets[best_indices].astype(np.float64)
+    rejected = (
+        ~np.isfinite(best_response)
+        | (best_response < minimum_response)
+        | ~usable_tangent
+    )
+    normal_offsets[rejected] = 0.0
+
+    refinable = (
+        (best_indices > 0)
+        & (best_indices < len(offsets) - 1)
+        & ~rejected
+    )
+    refinable_rows = row_indices[refinable]
+    refinable_indices = best_indices[refinable]
+    if len(refinable_rows):
+        response_left = outward_response[
+            refinable_rows,
+            refinable_indices - 1,
+        ]
+        response_center = outward_response[
+            refinable_rows,
+            refinable_indices,
+        ]
+        response_right = outward_response[
+            refinable_rows,
+            refinable_indices + 1,
+        ]
+        denominator = (
+            response_left - 2.0 * response_center + response_right
+        )
+        safe_denominator = (
+            np.isfinite(response_left)
+            & np.isfinite(response_center)
+            & np.isfinite(response_right)
+            & np.isfinite(denominator)
+            & (np.abs(denominator) > 1e-9)
+        )
+        subpixel_shift = np.zeros(len(refinable_rows), dtype=np.float64)
+        subpixel_shift[safe_denominator] = 0.5 * (
+            response_left[safe_denominator]
+            - response_right[safe_denominator]
+        ) / denominator[safe_denominator]
+        subpixel_shift = np.clip(subpixel_shift, -0.5, 0.5)
+        normal_offsets[refinable] += subpixel_shift * sample_step_px
+
+    if point_count >= 7:
+        filtered_offsets = cv2.medianBlur(
+            normal_offsets.astype(np.float32).reshape(-1, 1),
+            5,
+        ).reshape(-1).astype(np.float64)
+        normal_offsets[1:-1] = filtered_offsets[1:-1]
+
+    # Contact reconstruction is baseline-aware and must not be displaced by
+    # an unrelated horizontal substrate gradient.
+    normal_offsets[0] = 0.0
+    normal_offsets[-1] = 0.0
+    refined = points + normals * normal_offsets[:, None]
+    if not np.all(np.isfinite(refined)):
+        return points
+    refined[:, 0] = np.clip(refined[:, 0], 0.0, image.shape[1] - 1.0)
+    refined[:, 1] = np.clip(refined[:, 1], 0.0, image.shape[0] - 1.0)
+    return refined
+
+
+def _prune_low_confidence_contact_tails(
+    image: np.ndarray,
+    contour_arc: np.ndarray,
+    baseline_coeffs: Tuple[float, float, float],
+    scale_x: float,
+    scale_y: float,
+    physical_height: float,
+    contact_hint_points_px: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, bool]:
+    """
+    Remove thin annotation/substrate branches attached near the contacts.
+
+    A real liquid-air interface has a persistent dark interior on one side and
+    bright background on the other. Thin arrows, text, and substrate ridges can
+    produce a strong local gradient, but their two sides quickly return to a
+    similar intensity. The trusted high-contrast run containing the apex is
+    retained. Any rejected contact tail is replaced by a short bridge to a
+    nearby validated baseline anchor and refined again by the caller.
+    """
+    if contour_arc is None or len(contour_arc) < 9:
+        return contour_arc, False
+
+    points = contour_arc.astype(np.float64)
+    normal_data = _outward_contour_normals(
+        points,
+        baseline_coeffs,
+        scale_x,
+        scale_y,
+        physical_height,
+    )
+    if normal_data is None:
+        return points, False
+    normals, clearance_px, usable_tangent = normal_data
+    cap_height_px = float(np.max(clearance_px))
+    apex_index = int(np.argmax(clearance_px))
+    if apex_index < 3 or apex_index > len(points) - 4:
+        return points, False
+
+    contrast_depth_px = float(
+        np.clip(0.035 * cap_height_px, 8.0, 16.0)
+    )
+    contrast_start_px = max(3.0, contrast_depth_px * 0.35)
+    distances = np.linspace(
+        contrast_start_px,
+        contrast_depth_px,
+        7,
+        dtype=np.float32,
+    )
+    outward_x = (
+        points[:, 0, None] + normals[:, 0, None] * distances[None, :]
+    ).astype(np.float32)
+    outward_y = (
+        points[:, 1, None] + normals[:, 1, None] * distances[None, :]
+    ).astype(np.float32)
+    inward_x = (
+        points[:, 0, None] - normals[:, 0, None] * distances[None, :]
+    ).astype(np.float32)
+    inward_y = (
+        points[:, 1, None] - normals[:, 1, None] * distances[None, :]
+    ).astype(np.float32)
+
+    contrast_source = cv2.GaussianBlur(image, (3, 3), 0)
+    outward_values = cv2.remap(
+        contrast_source,
+        outward_x,
+        outward_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    inward_values = cv2.remap(
+        contrast_source,
+        inward_x,
+        inward_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    persistent_contrast = (
+        np.median(outward_values, axis=1)
+        - np.median(inward_values, axis=1)
+    )
+    central_mask = (
+        usable_tangent
+        & np.isfinite(persistent_contrast)
+        & (clearance_px >= 0.35 * cap_height_px)
+        & (persistent_contrast > 0.0)
+    )
+    central_contrast = persistent_contrast[central_mask]
+    if central_contrast.size < 5:
+        return points, False
+
+    reference_contrast = float(np.percentile(central_contrast, 40.0))
+    confidence_threshold = max(12.0, 0.35 * reference_contrast)
+    trusted = (
+        usable_tangent
+        & np.isfinite(persistent_contrast)
+        & (persistent_contrast >= confidence_threshold)
+    )
+    if not trusted[apex_index]:
+        trusted[apex_index] = True
+
+    segment_lengths = np.hypot(
+        np.diff(points[:, 0]),
+        np.diff(points[:, 1]),
+    )
+    total_arc_length = float(np.sum(segment_lengths))
+    tolerated_gap_px = float(
+        np.clip(0.015 * total_arc_length, 8.0, 20.0)
+    )
+
+    def trusted_boundary(direction):
+        last_trusted = apex_index
+        low_confidence_length = 0.0
+        index = apex_index + direction
+        while 0 <= index < len(points):
+            previous_index = index - direction
+            step_length = float(
+                np.hypot(*(points[index] - points[previous_index]))
+            )
+            if trusted[index]:
+                last_trusted = index
+                low_confidence_length = 0.0
+            else:
+                low_confidence_length += step_length
+                if low_confidence_length > tolerated_gap_px:
+                    break
+            index += direction
+        return last_trusted
+
+    left_index = trusted_boundary(-1)
+    right_index = trusted_boundary(1)
+    if (
+        left_index <= 0
+        and right_index >= len(points) - 1
+    ):
+        return points, False
+    if right_index - left_index < 5:
+        return points, False
+
+    core = points[left_index:right_index + 1]
+    left_target = points[0].copy()
+    right_target = points[-1].copy()
+    if (
+        contact_hint_points_px is not None
+        and contact_hint_points_px.shape == (2, 2)
+        and np.all(np.isfinite(contact_hint_points_px))
+    ):
+        hints = contact_hint_points_px[
+            np.argsort(contact_hint_points_px[:, 0])
+        ]
+        core_span = max(1.0, float(np.ptp(core[:, 0])))
+        hint_tolerance_px = max(
+            12.0,
+            0.25 * core_span,
+            0.12 * cap_height_px,
+        )
+        if abs(float(hints[0, 0]) - float(core[0, 0])) <= hint_tolerance_px:
+            left_target = _point_above_baseline_at_x(
+                float(hints[0, 0]),
+                baseline_coeffs,
+                scale_x,
+                scale_y,
+                physical_height,
+                0.5,
+            )
+        if abs(float(hints[1, 0]) - float(core[-1, 0])) <= hint_tolerance_px:
+            right_target = _point_above_baseline_at_x(
+                float(hints[1, 0]),
+                baseline_coeffs,
+                scale_x,
+                scale_y,
+                physical_height,
+                0.5,
+            )
+
+    def bridge(start_point, end_point):
+        bridge_length = float(np.hypot(*(end_point - start_point)))
+        bridge_count = max(2, int(np.ceil(bridge_length / 2.0)) + 1)
+        return np.linspace(
+            start_point,
+            end_point,
+            bridge_count,
+            dtype=np.float64,
+        )
+
+    left_bridge = bridge(left_target, core[0])
+    right_bridge = bridge(core[-1], right_target)
+    rebuilt = np.concatenate(
+        (left_bridge[:-1], core, right_bridge[1:]),
+        axis=0,
+    )
+    return rebuilt, True
+
+
 def _point_above_baseline_at_x(
     contact_x: float,
     baseline_coeffs: Tuple[float, float, float],
@@ -1131,9 +1693,13 @@ def auto_detect_edge_points(
     Detect the liquid-cap silhouette strictly above a user-defined baseline.
 
     The baseline first masks the substrate/reflection half-plane. Candidate
-    contours must have meaningful height above that line. Low-clearance tails
-    are removed, validated baseline anchors can pin the contact endpoints, and
-    the resulting liquid-cap arc is sampled uniformly by arc length.
+    contours must have meaningful height and two-sided contact support near
+    that line; top-connected objects such as a dispensing needle are rejected.
+    Low-clearance tails are removed, validated baseline anchors bound the
+    search segment and can pin nearby contact endpoints, and source-gradient
+    refinement places the liquid-cap arc on the optical interface. Persistent
+    two-sided contrast then removes attached annotation/substrate branches
+    before uniform arc-length sampling.
     """
     try:
         requested_points = int(num_points)
@@ -1202,11 +1768,9 @@ def auto_detect_edge_points(
     blurred = cv2.GaussianBlur(image, (7, 7), 0)
     masked_image = blurred.copy()
     masked_image[~above_baseline] = 255
-    _, binary = cv2.threshold(
+    _, binary = _adaptive_silhouette_threshold(
         masked_image,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+        above_baseline,
     )
     binary[~above_baseline] = 0
 
@@ -1223,6 +1787,28 @@ def auto_detect_edge_points(
     binary[[0, -1], :] = 0
     binary[:, [0, -1]] = 0
 
+    if contact_hint_points_px is not None:
+        hints = contact_hint_points_px[
+            np.argsort(contact_hint_points_px[:, 0])
+        ]
+        hint_span_px = float(hints[1, 0] - hints[0, 0])
+        if hint_span_px >= max(4.0, width_px * 0.01):
+            roi_padding_px = max(
+                8.0,
+                hint_span_px * 0.75,
+                width_px * 0.015,
+            )
+            roi_left = max(
+                0,
+                int(np.floor(hints[0, 0] - roi_padding_px)),
+            )
+            roi_right = min(
+                width_px,
+                int(np.ceil(hints[1, 0] + roi_padding_px + 1.0)),
+            )
+            binary[:, :roi_left] = 0
+            binary[:, roi_right:] = 0
+
     contours, _ = cv2.findContours(
         binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
@@ -1232,6 +1818,15 @@ def auto_detect_edge_points(
     clearance_margin = margin_pixels * scale_y
     minimum_cap_height = max(6.0 * scale_y, 0.03 * height_phys)
     minimum_area = max(20.0, height_px * width_px * 0.00025)
+    contact_band_px = max(
+        margin_pixels + kernel_size + 2.0,
+        height_px * 0.012,
+    )
+    top_border_guard_px = max(
+        3.0,
+        kernel_size + 1.0,
+        height_px * 0.008,
+    )
     best_arc = None
     best_score = -np.inf
 
@@ -1241,6 +1836,8 @@ def auto_detect_edge_points(
             continue
         contour_points = contour.reshape(-1, 2)
         if len(contour_points) < 6:
+            continue
+        if float(np.min(contour_points[:, 1])) <= top_border_guard_px:
             continue
         try:
             clearance = _baseline_clearance(
@@ -1254,6 +1851,14 @@ def auto_detect_edge_points(
             return []
 
         if float(np.max(clearance)) < minimum_cap_height:
+            continue
+        clearance_px = clearance / scale_y
+        contact_support = _baseline_contact_support(
+            contour_points,
+            clearance_px,
+            contact_band_px,
+        )
+        if contact_support is None:
             continue
         valid = clearance > clearance_margin
         arc = _longest_valid_contour_arc(contour_points, valid)
@@ -1271,6 +1876,14 @@ def auto_detect_edge_points(
         if arc is None or len(arc) < 5:
             continue
 
+        anchor_score = _anchor_segment_score(
+            arc,
+            contact_hint_points_px,
+            width_px,
+        )
+        if anchor_score is None:
+            continue
+
         x_span = float(np.ptp(arc[:, 0]))
         y_span = float(np.ptp(arc[:, 1]))
         if x_span < width_px * 0.02 or y_span < height_px * 0.02:
@@ -1281,10 +1894,63 @@ def auto_detect_edge_points(
         )
         cap_height = float(np.max(clearance))
         score = arc_length * (1.0 + cap_height / height_phys)
+        score *= 1.0 + float(contact_support[2])
+        score *= 1.0 + float(anchor_score)
         score += 0.01 * np.sqrt(area)
         if score > best_score:
             best_score = score
             best_arc = arc
+
+    if best_arc is not None:
+        try:
+            best_arc = _refine_contour_to_source_gradient(
+                image,
+                best_arc,
+                (a_line, b_line, c_line),
+                scale_x,
+                scale_y,
+                height_phys,
+            )
+            best_arc = _trim_contour_to_liquid_cap(
+                best_arc,
+                (a_line, b_line, c_line),
+                scale_x,
+                scale_y,
+                height_phys,
+                margin_pixels,
+                contact_hint_points_px,
+            )
+            best_arc, tails_pruned = _prune_low_confidence_contact_tails(
+                image,
+                best_arc,
+                (a_line, b_line, c_line),
+                scale_x,
+                scale_y,
+                height_phys,
+                contact_hint_points_px,
+            )
+            if tails_pruned:
+                best_arc = _refine_contour_to_source_gradient(
+                    image,
+                    best_arc,
+                    (a_line, b_line, c_line),
+                    scale_x,
+                    scale_y,
+                    height_phys,
+                )
+                best_arc = _trim_contour_to_liquid_cap(
+                    best_arc,
+                    (a_line, b_line, c_line),
+                    scale_x,
+                    scale_y,
+                    height_phys,
+                    margin_pixels,
+                    contact_hint_points_px,
+                )
+        except (cv2.error, FloatingPointError, ValueError):
+            # The localized silhouette remains a safe fallback if refinement
+            # cannot be completed for malformed or extremely small inputs.
+            pass
 
     sampled = _resample_contour_arc(best_arc, requested_points)
     if sampled is None:

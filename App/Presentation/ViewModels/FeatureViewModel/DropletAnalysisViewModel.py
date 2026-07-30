@@ -13,11 +13,17 @@ from PyQt6.QtGui import QImage
 
 from App.Models.Analysis.AnalysisManager import AnalysisManager
 from App.Models.Analysis.DropletAnalysis import auto_detect_edge_points
+from App.Presentation.ViewModels.RecentDirectoryState import (
+    RecentDirectoryState,
+)
 from App.Presentation.ViewModels.Workers import FunctionWorker
 
 
 class DropletAnalysisViewModel(QObject):
     """Own droplet-analysis state and every potentially blocking operation."""
+
+    SAVE_DIRECTORY = "droplet_analysis_save"
+    _DIRECTORY_PURPOSES = frozenset((SAVE_DIRECTORY,))
 
     analysis_completed = pyqtSignal(object)
     baseline_completed = pyqtSignal(str, object)
@@ -30,9 +36,19 @@ class DropletAnalysisViewModel(QObject):
     save_completed = pyqtSignal(str)
     workers_idle = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        parent=None,
+        recent_directory_provider=None,
+        recent_directory_recorder=None,
+    ):
         super().__init__(parent)
         self._analysis_manager = AnalysisManager()
+        self._recent_directory_state = RecentDirectoryState(
+            self._DIRECTORY_PURPOSES,
+            recent_directory_provider,
+            recent_directory_recorder,
+        )
         self._source_image_path = None
         self._item_path = None
         self._image_array = None
@@ -209,76 +225,55 @@ class DropletAnalysisViewModel(QObject):
         )
         return True
 
-    def save_rendered_image(self, image):
+    def get_save_dialog_directory(self):
+        """Return the last successful Analysis Result directory."""
+        return self._recent_directory_state.get(
+            self.SAVE_DIRECTORY,
+            current_path=self._source_image_path,
+        )
+
+    def get_suggested_save_filename(self):
+        """Build a readable, collision-resistant default PNG filename."""
+        source_path = self._source_image_path
+        base_name = (
+            os.path.splitext(os.path.basename(source_path))[0]
+            if isinstance(source_path, str) and source_path.strip()
+            else "analysis_result"
+        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        return f"{base_name}_{timestamp}.png"
+
+    def save_rendered_image(self, image, file_path):
         if not isinstance(image, QImage) or image.isNull():
             self.operation_failed.emit("save", "Invalid rendered image")
             return False
+        if not isinstance(file_path, str) or not file_path.strip():
+            self.operation_failed.emit("save", "Invalid save destination")
+            return False
 
         image_copy = image.copy()
-        source_path = self._source_image_path
-        item_path = self._item_path
+        normalized_path = os.path.abspath(os.path.normpath(file_path))
 
         def save_image():
-            save_dir, base_name = self._resolve_save_context(
-                item_path,
-                source_path,
-            )
-            if not save_dir:
-                raise ValueError(
-                    "Cannot determine the current item's Image folder automatically."
+            if not image_copy.save(normalized_path, "PNG"):
+                raise OSError(
+                    f"Could not save image to '{normalized_path}'"
                 )
-            os.makedirs(save_dir, exist_ok=True)
-            file_path = self._build_unique_save_path(save_dir, base_name)
-            if not image_copy.save(file_path, "PNG"):
-                raise OSError(f"Could not save image to '{file_path}'")
-            return file_path
+            return normalized_path
 
-        self._start_worker(save_image, self.save_completed.emit, "save")
+        self._start_worker(
+            save_image,
+            self._on_save_completed,
+            "save",
+        )
         return True
 
-    @staticmethod
-    def _resolve_save_context(item_path, source_path):
-        normalized_item = (
-            os.path.normpath(item_path)
-            if isinstance(item_path, str) and item_path.strip()
-            else None
+    def _on_save_completed(self, file_path):
+        self._recent_directory_state.remember(
+            self.SAVE_DIRECTORY,
+            file_path,
         )
-        normalized_source = (
-            os.path.normpath(source_path)
-            if isinstance(source_path, str) and source_path.strip()
-            else None
-        )
-
-        if normalized_item:
-            item_root = normalized_item
-        elif normalized_source:
-            media_dir = os.path.dirname(normalized_source)
-            if os.path.basename(media_dir).casefold() in {"image", "video"}:
-                item_root = os.path.dirname(media_dir)
-            else:
-                item_root = media_dir
-        else:
-            return None, "analysis_result"
-
-        base_name = (
-            os.path.splitext(os.path.basename(normalized_source))[0]
-            if normalized_source
-            else "analysis_result"
-        )
-        return os.path.join(item_root, "Image"), base_name
-
-    @staticmethod
-    def _build_unique_save_path(save_dir, base_name):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidate = os.path.join(save_dir, f"{base_name}_{timestamp}.png")
-        index = 1
-        while os.path.exists(candidate):
-            candidate = os.path.join(
-                save_dir,
-                f"{base_name}_{timestamp}_{index}.png",
-            )
-            index += 1
-        return candidate
+        self.save_completed.emit(file_path)
 
     def _start_worker(self, function, callback, operation):
         worker = FunctionWorker(function)

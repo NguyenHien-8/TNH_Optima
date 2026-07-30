@@ -169,6 +169,7 @@ class ConfigRepository:
         "image_capture": "image_editor_capture_directory",
         "video_open": "video_editor_open_directory",
         "video_capture": "video_editor_capture_directory",
+        "droplet_analysis_save": "droplet_analysis_save_directory",
         "sidebar_image_open": "sidebar_item_open_image_directory",
         "sidebar_video_open": "sidebar_item_open_video_directory",
     }

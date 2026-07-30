@@ -195,20 +195,45 @@ class MvvmResponsivenessTests(unittest.TestCase):
         editor.close()
 
     def test_droplet_export_writes_in_view_model_worker(self):
-        view_model = DropletAnalysisViewModel()
         image = QImage(64, 48, QImage.Format.Format_RGB32)
         image.fill(Qt.GlobalColor.white)
-        saved_spy = QSignalSpy(view_model.save_completed)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            item_path = Path(temp_dir) / "Item"
-            item_path.mkdir()
-            view_model.configure_storage_context(item_path=str(item_path))
-            self.assertTrue(view_model.save_rendered_image(image))
+            save_directory = Path(temp_dir) / "Selected"
+            save_directory.mkdir()
+            save_path = save_directory / "analysis.png"
+            remembered = {}
+            view_model = DropletAnalysisViewModel(
+                recent_directory_recorder=lambda purpose, directory: (
+                    remembered.update({purpose: directory})
+                ),
+            )
+            saved_spy = QSignalSpy(view_model.save_completed)
+            self.assertTrue(
+                view_model.save_rendered_image(
+                    image,
+                    str(save_path),
+                )
+            )
             self._wait_until(lambda: len(saved_spy) == 1)
             saved_path = Path(saved_spy[0][0])
-            self.assertEqual(saved_path.parent, item_path / "Image")
+            self.assertEqual(saved_path, save_path)
             self.assertTrue(saved_path.is_file())
+            self.assertEqual(
+                remembered[view_model.SAVE_DIRECTORY],
+                str(save_directory),
+            )
+
+            restored_view_model = DropletAnalysisViewModel(
+                recent_directory_provider=lambda purpose: (
+                    remembered.get(purpose)
+                ),
+            )
+            self.assertEqual(
+                restored_view_model.get_save_dialog_directory(),
+                str(save_directory),
+            )
+            self.assertTrue(restored_view_model.request_close())
 
         self.assertTrue(view_model.request_close())
 

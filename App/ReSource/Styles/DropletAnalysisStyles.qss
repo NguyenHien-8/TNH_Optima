@@ -50,6 +50,35 @@
     color: #888888;
 }
 
+#DropletAnalysisWindow QWidget#AnalysisActionBar QPushButton {
+    min-height: 26px;
+    font-size: 12px;
+    padding: 3px 7px;
+}
+
+#DropletAnalysisWindow QWidget#AnalysisActionBar QComboBox {
+    min-height: 26px;
+    font-size: 12px;
+    padding: 2px 6px;
+}
+
+#DropletAnalysisWindow QGroupBox#LabelConfigGroup {
+    padding: 10px 8px 7px 8px;
+}
+
+#DropletAnalysisWindow QGroupBox#LabelConfigGroup QPushButton {
+    min-height: 26px;
+    padding: 3px 8px;
+}
+
+#DropletAnalysisWindow QPushButton#ResetLabelLayoutButton {
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    padding: 0;
+}
+
 #DropletAnalysisWindow QComboBox {
     min-height: 26px;
     background-color: #FFFFFF;
@@ -66,6 +95,22 @@
 #DropletAnalysisWindow QComboBox::drop-down {
     width: 22px;
     border: none;
+}
+
+#DropletAnalysisWindow QSpinBox,
+#DropletAnalysisWindow QDoubleSpinBox {
+    min-height: 26px;
+    background-color: #FFFFFF;
+    border: 1px solid #9A9A9A;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+#DropletAnalysisWindow QSpinBox:hover,
+#DropletAnalysisWindow QSpinBox:focus,
+#DropletAnalysisWindow QDoubleSpinBox:hover,
+#DropletAnalysisWindow QDoubleSpinBox:focus {
+    border-color: #4F78B8;
 }
 
 #DropletAnalysisWindow QTextEdit {

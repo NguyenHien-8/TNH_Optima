@@ -307,8 +307,11 @@ class VideoEditorCaptureTests(unittest.TestCase):
         self.assertFalse(calls)
         self._wait_until(lambda: calls == ["next"])
 
-    def test_project_video_capture_repairs_image_folder(self):
+    def test_project_video_capture_uses_save_as_and_updates_project_when_selected(self):
         remembered = {}
+        image_folder = self.item / "Image"
+        image_folder.mkdir()
+        target = image_folder / "chosen_capture.png"
         view_model = VideoEditorViewModel(
             file_path=str(self.video_file),
             recent_directory_recorder=lambda purpose, directory: (
@@ -324,22 +327,75 @@ class VideoEditorCaptureTests(unittest.TestCase):
         editor.current_frame = self._frame()
         media_created = QSignalSpy(editor.media_created)
 
-        with patch.object(editor, "video_widget"), patch(
+        with patch(
+            "App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor."
+            "QFileDialog.getSaveFileName",
+            return_value=(str(target), "PNG Images (*.png)"),
+        ) as save_dialog, patch.object(editor, "video_widget"), patch(
             "App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor."
             "QMessageBox.warning"
         ) as warning:
             editor.capture_image()
             self._wait_for_workers(editor)
 
-        captures = list((self.item / "Image").glob("capture_*.png"))
-        self.assertEqual(len(captures), 1)
+        save_dialog.assert_called_once()
+        self.assertTrue(target.is_file())
         self.assertEqual(len(media_created), 1)
         self.assertEqual(media_created[0][0:3], ["Project", "Item", "Image"])
         self.assertEqual(
             remembered[view_model.CAPTURE_DIRECTORY],
-            str(self.item / "Image"),
+            str(image_folder),
         )
         warning.assert_not_called()
+        editor.close()
+
+    def test_project_video_capture_can_save_outside_project(self):
+        selected_folder = self.root / "Selected"
+        selected_folder.mkdir()
+        target = selected_folder / "chosen_capture.png"
+        editor = VideoEditor(
+            str(self.video_file),
+            project_name="Project",
+            project_path=str(self.project),
+        )
+        editor.current_frame = self._frame()
+        media_created = QSignalSpy(editor.media_created)
+
+        with patch(
+            "App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor."
+            "QFileDialog.getSaveFileName",
+            return_value=(str(target), "PNG Images (*.png)"),
+        ) as save_dialog:
+            editor.capture_image()
+            self._wait_for_workers(editor)
+
+        save_dialog.assert_called_once()
+        self.assertTrue(target.is_file())
+        self.assertFalse((self.item / "Image").exists())
+        self.assertEqual(len(media_created), 0)
+        editor.close()
+
+    def test_project_video_capture_cancel_does_not_save(self):
+        editor = VideoEditor(
+            str(self.video_file),
+            project_name="Project",
+            project_path=str(self.project),
+        )
+        editor.current_frame = self._frame()
+
+        with patch(
+            "App.Presentation.Views.Widgets.FileEditorWorkspace.VideoEditor."
+            "QFileDialog.getSaveFileName",
+            return_value=("", ""),
+        ) as save_dialog, patch.object(
+            editor.view_model,
+            "save_capture",
+        ) as save_capture:
+            editor.capture_image()
+
+        save_dialog.assert_called_once()
+        save_capture.assert_not_called()
+        self.assertFalse((self.item / "Image").exists())
         editor.close()
 
     def test_external_video_capture_uses_save_as_instead_of_structure_error(self):

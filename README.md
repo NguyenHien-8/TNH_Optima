@@ -234,16 +234,19 @@ Coincident points are rejected. Automatic edge detection additionally rejects a 
 1. Validate the requested point count, fixed physical dimensions, and finite baseline.
 2. Convert the input to contiguous grayscale `uint8`; normalized `[0,1]` input is expanded to `[0,255]`.
 3. Build a physical half-plane mask for pixels on or above the user baseline.
-4. Apply a `7×7` Gaussian blur, set the excluded half-plane to white, and run inverse Otsu thresholding.
+4. Apply a `7×7` Gaussian blur, set the excluded half-plane to white, and use Otsu only as a foreground seed. Blend that seed towards the measured bright-background level to obtain a permissive localization mask that does not shrink into a soft droplet rim.
 5. Apply morphological close with an image-scaled odd kernel clamped to `3..9`, followed by a `3×3` open.
-6. Extract external contours and reject components that are too small, too flat, or lack a continuous arc above the baseline margin.
-7. For each candidate, keep the longest continuous valid contour run by geometric arc length.
-8. Use the clearance profile from the baseline to find the apex, remove low-clearance substrate tails, and reconstruct the left/right contact endpoints.
-9. Estimate each endpoint by a local least-squares model of `x` versus baseline clearance. The two manually selected baseline anchors may replace these estimates when they are sufficiently close.
-10. Score candidates primarily by arc length and cap height, select the best cap, then resample it at uniform arc-length intervals.
-11. Convert samples back to physical coordinates and return only points strictly above the baseline.
+6. Restrict the search to the selected baseline segment plus a generous overhang margin when two valid anchors are available; the margin preserves droplets with contact angles greater than 90°.
+7. Extract external contours and reject top-connected components (for example, the dispensing needle), small/flat components, and candidates without two horizontally separated contact regions near the baseline.
+8. For each candidate, keep the longest continuous valid contour run by geometric arc length and reject footprints inconsistent with the two anchors.
+9. Use the clearance profile from the baseline to find the apex, remove low-clearance substrate tails, and reconstruct the left/right contact endpoints.
+10. Estimate each endpoint by a local least-squares model of `x` versus baseline clearance. The two manually selected baseline anchors may replace these estimates when they are sufficiently close.
+11. Score the remaining candidates by arc length, cap height, baseline-contact support, and overlap with the selected baseline segment.
+12. On the lightly smoothed source image, search along each selected contour point's outward normal for the strongest dark-to-light Scharr-gradient response, refine the peak to subpixel precision, median-filter only the normal offsets, and trim baseline tails again.
+13. Measure persistent contrast across a deeper band on both sides of the refined contour. Keep the trusted run containing the apex; remove thin annotation/substrate branches whose two sides return to similar intensity, bridge the valid interface back to nearby baseline contacts, and refine that bridge once.
+14. Resample the refined cap at uniform arc-length intervals, convert samples back to physical coordinates, and return only points strictly above the baseline.
 
-This ordering prevents the substrate and reflected droplet from dominating the binary component before contour selection.
+This ordering prevents the needle, annotation graphics, substrate, and reflected droplet from dominating contour selection while avoiding both inward threshold bias and outward contact-tail leakage.
 
 ### 3. Ellipsoid Fit: direct initialization plus robust weighted refinement
 
@@ -309,7 +312,16 @@ left_point, right_point,
 left_tangent, right_tangent
 ```
 
-`DropletAnalysisWindow` draws these values as contact markers, inward baseline segments, tangent arrows, arcs, and labels. `DropletAnalysisViewModel` owns baseline computation, edge detection, curve fitting, and file export. It downsamples only the display/heatmap arrays while retaining the full-resolution source for analysis. The View renders a GUI-owned canvas snapshot; PNG encoding, directory creation, and the collision-free timestamped write run in a worker.
+`DropletAnalysisWindow` draws these values as contact markers, inward baseline
+segments, tangent arrows, arcs, and labels. `DropletAnalysisViewModel` owns
+baseline computation, edge detection, curve fitting, and file export. It
+downsamples only the display/heatmap arrays while retaining the full-resolution
+source for analysis. Save Analysis Result opens Save As at the last successful
+directory stored in SQLite and suggests a timestamped source-based PNG name.
+The View crops original-image exports to the normalized Matplotlib axes
+rectangle, removing baked figure padding while preserving the physical 5:3
+aspect ratio. PNG encoding and writing run in a worker; the selected directory
+is remembered only after that worker succeeds.
 
 ### 6. Camera acquisition and frame dispatch
 
@@ -344,7 +356,11 @@ Video playback is deliberately lazy:
 - On Play, `VideoEditorViewModel` validates the path and performs potentially slow filesystem metadata I/O in a worker.
 - Only after validation does the View construct the GUI-owned multimedia objects; Qt Multimedia then opens the source asynchronously.
 - Before one video starts, `MainView` pauses every other video and releases its decoder while retaining its resume position.
-- Capturing a playback frame overlays the current timestamp. Project videos save to the sibling `Image/` directory, creating it if necessary; external videos use a Save As dialog. Directory creation, PNG encoding, and writing are owned by `VideoEditorViewModel` and run in a worker.
+- Capturing a playback frame always opens a Save As dialog and overlays the
+  current timestamp after the destination is confirmed. PNG encoding and
+  writing are owned by `VideoEditorViewModel` and run in a worker. Saving into
+  the current Item's `Image/` directory also updates the Project tree
+  immediately.
 
 ### 8. Serial actuator protocol
 
